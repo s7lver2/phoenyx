@@ -23,11 +23,14 @@ fn cull(@builtin(global_invocation_id) id: vec3<u32>) {
   for (var p = 0u; p < 6u; p++) {
     if (dot(g.planes[p].xyz, it.xyz) + g.planes[p].w < -r) { return; }
   }
-  let d = distance(it.xyz, g.cam.xyz);
+  // LOD por tamano en pantalla (px de diametro); lo sub-pixel se descarta.
+  let d = max(distance(it.xyz, g.cam.xyz), 0.001);
+  let px = 2.0 * r * g.cam.w / d;
+  if (px < 1.5) { return; }
   // Cada LOD tiene su propio array de visibles y su propio argumento indirecto.
-  if (d < g.lod.x) {
+  if (px > g.lod.x) {
     let k = atomicAdd(&args[1], 1u); vis0[k] = i;
-  } else if (d < g.lod.y) {
+  } else if (px > g.lod.y) {
     let k = atomicAdd(&args[6], 1u); vis1[k] = i;
   } else {
     let k = atomicAdd(&args[11], 1u); vis2[k] = i;
@@ -61,6 +64,6 @@ fn vs(@location(0) p: vec3<f32>, @builtin(instance_index) ii: u32) -> VOut {
 @fragment
 fn fs(v: VOut) -> @location(0) vec4<f32> {
   let l = max(dot(normalize(v.n), g.light.xyz), 0.0) * 0.8 + 0.2;
-  let fog = clamp(v.dist / g.lod.y, 0.0, 1.0);
+  let fog = clamp(v.dist / 1400.0, 0.0, 1.0);
   return vec4<f32>(mix(v.col * l, vec3<f32>(0.08, 0.07, 0.03), fog * fog), 1.0);
 }

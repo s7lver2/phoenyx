@@ -26,9 +26,10 @@ const loop = (t) => {
   cpu = cpu * 0.95 + (performance.now() - a) * 0.05;
   ms = ms * 0.95 + (t - last) * 0.05; last = t;
   if (++f % 20 === 0) {
-    const k = p.counts();
-    hud.textContent = `instancias ${N}\nframe ${ms.toFixed(2)} ms (${(1000/ms).toFixed(0)} fps)\ncpu submit ${cpu.toFixed(3)} ms\nvisibles LOD0/1/2 ${k.join(" / ")}\ntriangulos ${(p.triangles()/1e6).toFixed(2)} M\ndraws 3`;
-    window.__stats = { ms, cpu, counts: Array.from(k), tris: p.triangles() };
+    const k = p.counts(), g = p.gpu_ms();
+    hud.textContent = `instancias ${N}\nframe ${ms.toFixed(2)} ms (${(1000/ms).toFixed(0)} fps)\ncpu submit ${cpu.toFixed(3)} ms\nvisibles LOD0/1/2 ${k.join(" / ")}\ntriangulos ${(p.triangles()/1e6).toFixed(2)} M\ndraws 3
+gpu cull ${g[0]?.toFixed(2)} ms  render ${g[1]?.toFixed(2)} ms`;
+    window.__stats = { ms, cpu, counts: Array.from(k), tris: p.triangles(), gpu: Array.from(g) };
   }
   requestAnimationFrame(loop);
 };

@@ -9,7 +9,9 @@ use wgpu::util::DeviceExt;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 // Subdivisiones de la icosfera por LOD: 5120, 320 y 80 triangulos.
 const LODS: [u32; 3] = [4, 2, 1];
-const LOD_DIST: [f32; 2] = [70.0, 300.0];
+// Umbrales de LOD en pixeles de diametro en pantalla.
+const LOD_PX: [f32; 2] = [60.0, 14.0];
+const FOV: f32 = 1.1;
 const SPACING: f32 = 6.0;
 
 #[repr(C)]
@@ -61,6 +63,12 @@ fn icosphere(sub: u32) -> (Vec<[f32; 3]>, Vec<u16>) {
     )
 }
 
+struct Ts {
+    qs: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    period: f32,
+}
+
 #[wasm_bindgen]
 pub struct Phoenix {
     surface: wgpu::Surface<'static>,
@@ -85,6 +93,9 @@ pub struct Phoenix {
     frame: u64,
     busy: Rc<Cell<bool>>,
     counts: Rc<Cell<[u32; 3]>>,
+    ts: Option<Ts>,
+    // ms de GPU: [cull, render] segun el ultimo readback
+    gpu: Rc<Cell<[f32; 2]>>,
 }
 
 fn depth_view(d: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
@@ -127,7 +138,10 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Ph
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default())
+        .request_device(&wgpu::DeviceDescriptor {
+            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+            ..Default::default()
+        })
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
@@ -177,7 +191,7 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Ph
             | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
     });
     let staging = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None, size: 60, mapped_at_creation: false,
+        label: None, size: 96, mapped_at_creation: false,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
     });
     let vis: [wgpu::Buffer; 3] = std::array::from_fn(|_| {
@@ -258,11 +272,22 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Ph
         multisample: Default::default(), multiview_mask: None, cache: None,
     });
 
+    let ts = device.features().contains(wgpu::Features::TIMESTAMP_QUERY).then(|| Ts {
+        qs: device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: None, ty: wgpu::QueryType::Timestamp, count: 4,
+        }),
+        resolve: device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size: 32, mapped_at_creation: false,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+        }),
+        period: queue.get_timestamp_period(),
+    });
     let depth = depth_view(&device, w, h);
     Ok(Phoenix {
         surface, cfg, device, queue, depth, globals, args, staging, cull_pl, cull_bg, draw_pl,
         draw_bg, vis_bg, vbuf, ibuf, lods, n: count, extent, frame: 0,
         busy: Rc::new(Cell::new(false)), counts: Rc::new(Cell::new([0; 3])),
+        ts, gpu: Rc::new(Cell::new([0.0; 2])),
     })
 }
 
@@ -286,6 +311,11 @@ impl Phoenix {
         (0..3).map(|k| c[k] as f64 * (self.lods[k].0 / 3) as f64).sum()
     }
 
+    /// [cull_ms, render_ms] de GPU (vacio si no hay timestamp-query).
+    pub fn gpu_ms(&self) -> Vec<f32> {
+        if self.ts.is_some() { self.gpu.get().to_vec() } else { vec![] }
+    }
+
     pub fn frame(&mut self, t: f64) {
         let t = t as f32;
         // Camara: circulo sobre la rejilla mirando en la tangente.
@@ -295,7 +325,7 @@ impl Phoenix {
         let eye = Vec3::new(c + r * a.cos(), 22.0, c + r * a.sin());
         let dir = Vec3::new(-a.sin(), -0.12, a.cos());
         let aspect = self.cfg.width as f32 / self.cfg.height as f32;
-        let vp = Mat4::perspective_rh(1.1, aspect, 0.3, 1500.0) * Mat4::look_to_rh(eye, dir, Vec3::Y);
+        let vp = Mat4::perspective_rh(FOV, aspect, 0.3, 1500.0) * Mat4::look_to_rh(eye, dir, Vec3::Y);
         let m = vp.transpose();
         let (r0, r1, r2, r3) = (m.col(0), m.col(1), m.col(2), m.col(3));
         let planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2].map(|p| {
@@ -304,9 +334,9 @@ impl Phoenix {
         });
         let g = Globals {
             view_proj: vp.to_cols_array(),
-            cam: [eye.x, eye.y, eye.z, 0.0],
+            cam: [eye.x, eye.y, eye.z, self.cfg.height as f32 / (2.0 * (FOV * 0.5).tan())],
             planes,
-            lod: [LOD_DIST[0], LOD_DIST[1], 2.6, self.n as f32],
+            lod: [LOD_PX[0], LOD_PX[1], 2.6, self.n as f32],
             light: [0.5, 0.8, 0.3, 0.0],
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
@@ -329,7 +359,14 @@ impl Phoenix {
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
         {
-            let mut p = enc.begin_compute_pass(&Default::default());
+            let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: self.ts.as_ref().map(|t| wgpu::ComputePassTimestampWrites {
+                    query_set: &t.qs,
+                    beginning_of_pass_write_index: Some(0),
+                    end_of_pass_write_index: Some(1),
+                }),
+            });
             p.set_pipeline(&self.cull_pl);
             p.set_bind_group(0, &self.cull_bg, &[]);
             p.dispatch_workgroups(self.n.div_ceil(64), 1, 1);
@@ -351,6 +388,11 @@ impl Phoenix {
                     }),
                     stencil_ops: None,
                 }),
+                timestamp_writes: self.ts.as_ref().map(|t| wgpu::RenderPassTimestampWrites {
+                    query_set: &t.qs,
+                    beginning_of_pass_write_index: Some(2),
+                    end_of_pass_write_index: Some(3),
+                }),
                 ..Default::default()
             });
             p.set_pipeline(&self.draw_pl);
@@ -365,17 +407,27 @@ impl Phoenix {
         let read = self.frame % 20 == 0 && !self.busy.get();
         if read {
             enc.copy_buffer_to_buffer(&self.args, 0, &self.staging, 0, 60);
+            if let Some(t) = &self.ts {
+                enc.resolve_query_set(&t.qs, 0..4, &t.resolve, 0);
+                enc.copy_buffer_to_buffer(&t.resolve, 0, &self.staging, 64, 32);
+            }
         }
         self.queue.submit([enc.finish()]);
         self.queue.present(frame);
         if read {
             self.busy.set(true);
             let (busy, counts, st) = (self.busy.clone(), self.counts.clone(), self.staging.clone());
+            let (gpu, period, has_ts) = (self.gpu.clone(), self.ts.as_ref().map_or(0.0, |t| t.period), self.ts.is_some());
             self.staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
                 if r.is_ok() {
                     let d = st.slice(..).get_mapped_range().unwrap();
                     let u: &[u32] = bytemuck::cast_slice(&d);
                     counts.set([u[1], u[6], u[11]]);
+                    if has_ts {
+                        let t: &[u64] = bytemuck::cast_slice(&d[64..96]);
+                        let ms = |a: u64, b: u64| b.saturating_sub(a) as f32 * period * 1e-6;
+                        gpu.set([ms(t[0], t[1]), ms(t[2], t[3])]);
+                    }
                     drop(d);
                     st.unmap();
                 }
