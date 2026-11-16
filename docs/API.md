@@ -67,3 +67,7 @@ Para que un foco proyecte sombra, pon `luz[14] = 1` en el array que devuelve `li
 - Si el anfitrión cambia instancias cada frame, usa `set_instances` solo con el rango modificado; se recalculan los chunks de culling.
 - La escena (colocación, rotación, escala) la genera el anfitrión; Phoenix no guarda jerarquías ni transformaciones.
 - Ejemplos completos: `web/index.html` (exteriores) y `web/suites.html` (interior).
+
+## Partículas
+
+`engine.emit_particles(p, count)` con `p` = 17 floats `[x, y, z, vx, vy, vz, dispersión, variación de velocidad, vida, tamaño inicial, tamaño final, gravedad, r, g, b, a, aditivo]`. Buffer circular de 65.536; posición y fundido se calculan en el vertex shader por edad, sin CPU ni compute. Se dibujan tras la escena, con test de profundidad y sin escribirla.

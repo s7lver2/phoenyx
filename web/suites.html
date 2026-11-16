@@ -139,6 +139,12 @@ const loop = (now) => {
     cam.yaw += dy * Math.min(1, dt * 3); cam.pitch *= 0.95;
   }
   refreshLights(cam.x, cam.z);
+  // Polvo en suspension delante de la camara (particulas de GPU, mezcla alfa).
+  if (!window.__nodust && (cam.dustT = (cam.dustT || 0) - dt) <= 0) {
+    cam.dustT = 0.05;
+    const f = [Math.sin(cam.yaw) * 1.2, 0, -Math.cos(cam.yaw) * 1.2];
+    p.emit_particles(new Float32Array([cam.x + f[0], cam.y - 0.5, cam.z + f[2], 0, 0.05, 0, 0.4, 0.5, 6, 0.05, 0.05, 0, 0.5, 0.45, 0.35, 0.5, 1]), 2);
+  }
   p.frame(cam.x, cam.y, cam.z, cam.yaw, cam.pitch);
   guard();
   ms = ms * 0.95 + (now - last) * 0.05; last = now;

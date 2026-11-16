@@ -9,6 +9,9 @@ use std::{cell::Cell, rc::Rc};
 use wasm_bindgen::prelude::*;
 use wgpu::util::DeviceExt;
 
+mod particles;
+use particles::Particles;
+
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const FOV: f32 = 1.1;
 /// Formato del buffer HDR de la escena (el post-proceso lo compone en pantalla).
@@ -109,6 +112,7 @@ pub struct Phoenix {
     ts: Option<Ts>,
     tris: Rc<Vec<u32>>,
     full: Rc<Vec<u32>>,
+    parts: Particles,
 }
 
 thread_local! {
@@ -844,11 +848,12 @@ pub async fn create(
         }
         b.finish(&wgpu::RenderBundleDescriptor { label: None })
     };
+    let parts = Particles::new(&device, HDR, DEPTH, 65536);
     Ok(Phoenix {
         surface, cfg, device, queue, depth, tg, post, post_k: [0.05, 0.8, 0.6], globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
         cull_bg, draw_pl, bundle, cluster_pl, lux, sviews, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: n0, models, lods,
         frame: 0, tau: 1.0, capacity: count, hiz, hiz_res, prev_vp: Mat4::IDENTITY, hiz_on: true, hiz_ready: false, min_px: 1.0, far_tol: 0.6, env_on: true, inst_buf, chunks, chunk_pl, dirty: true, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 8])), ts,
-        tris: Rc::new(tris), full: Rc::new(full),
+        tris: Rc::new(tris), full: Rc::new(full), parts,
     })
 }
 
@@ -968,12 +973,25 @@ impl Phoenix {
         self.n
     }
 
+    /// Emite `count` particulas (formato de `p` en `Particles::emit`: 17 floats).
+    pub fn emit_particles(&mut self, p: &[f32], count: u32) {
+        let now = web_sys::window().and_then(|w| w.performance()).map(|p| p.now() as f32 / 1000.0).unwrap_or(0.0);
+        self.parts.emit(&self.queue, now, p, count);
+    }
+
     pub fn frame(&mut self, ex: f32, ey: f32, ez: f32, yaw: f32, pitch: f32) {
         let eye = Vec3::new(ex, ey, ez);
         let dir = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos());
         let aspect = self.cfg.width as f32 / self.cfg.height as f32;
         let vp = Mat4::perspective_rh(FOV, aspect, 0.3, 4000.0) * Mat4::look_to_rh(eye, dir, Vec3::Y);
         let planes = lux::planes_of(vp);
+        {
+            let right = dir.cross(Vec3::Y).normalize_or_zero();
+            let up = right.cross(dir);
+            let now = web_sys::window().and_then(|w| w.performance()).map(|p| p.now() as f32 / 1000.0).unwrap_or(0.0);
+            let u = particles::PU { vp: vp.to_cols_array(), right: [right.x, right.y, right.z, 0.0], up: [up.x, up.y, up.z, 0.0], time: [now, 0.0, 0.0, 0.0] };
+            self.queue.write_buffer(&self.parts.uni, 0, bytemuck::bytes_of(&u));
+        }
         let g = Globals {
             view_proj: vp.to_cols_array(),
             cam: [ex, ey, ez, self.cfg.height as f32 / (2.0 * (FOV * 0.5).tan())],
@@ -1133,6 +1151,11 @@ impl Phoenix {
                 p.draw(0..6, 0..1);
             }
             p.execute_bundles([&self.bundle]);
+            if self.parts.live > 0 {
+                p.set_pipeline(&self.parts.pl);
+                p.set_bind_group(0, &self.parts.bg, &[]);
+                p.draw(0..6, 0..self.parts.live);
+            }
         }
         // Hi-Z para el culling del frame siguiente.
         for k in 0..self.hiz.levels.len() {

@@ -3,7 +3,7 @@
 ## Lo que no hace el motor
 - **No es Nanite de verdad:** el LOD es discreto por instancia, sin jerarquía de clusters, sin visibility buffer ni rasterizado de microtriángulos.
 - **Sin animación esquelética:** no puede dibujar personajes con huesos (en Las Suites: Facelings, partygoers). Haría falta skinning en GPU o un renderer híbrido con three.js para los personajes.
-- **Sin transparencias, partículas ni UI.**
+- **Partículas:** hay (GPU, sin estado, billboards con mezcla alfa o aditiva, hasta 65.536, `emit_particles`); sin sorting ni sombras, y sin texturas de sprite (disco suave). **Sin transparencias en mallas ni UI.**
 - **Solo WebGPU** con `indirect-first-instance`. Sin WebGPU, el anfitrión tiene que usar otro renderer.
 - Rotación de instancias solo en Y; sin jerarquías de transformaciones.
 - Las UV no pueden salir de `[0, 1]`; un solo material por modelo.
