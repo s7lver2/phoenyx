@@ -196,11 +196,10 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {
     let dust = vec3<f32>(0.40, 0.27, 0.15) * (1.0 - smoothstep(0.0, 0.45, v.wpos.y));
     let alb2 = mix(albedo, dust, 0.45 * (1.0 - smoothstep(0.0, 0.5, v.wpos.y)));
     var lit = lit_surface(v.wpos, nn, view, alb2, orm.g, orm.b, orm.r * mix(0.55, 1.0, gy), v.pos.xy, 1.0 / v.pos.w);
-    lit = aces(lit * sh.texel.w);
     let fogt = clamp(v.dist / 2500.0, 0.0, 1.0);
     let hazel = pow(horizon_col(g.light.y), vec3<f32>(2.2));
     let outl = mix(lit, hazel, fogt * fogt);
-    return vec4<f32>(pow(outl, vec3<f32>(1.0 / 2.2)), 1.0);
+    return vec4<f32>(outl, 1.0);
   }
   let n = normalize(v.n);
   let flat_mode = g.light.w > 0.5;
@@ -213,7 +212,7 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {
   let lit = (sun * 0.9 + sky * 0.35) * ao;
   let fog = clamp(v.dist / 2500.0, 0.0, 1.0);
   let haze = select(vec3<f32>(0.55, 0.62, 0.72), vec3<f32>(0.80, 0.77, 0.71), flat_mode);
-  return vec4<f32>(mix(v.col * lit, haze, fog * fog), 1.0);
+  return vec4<f32>(pow(mix(v.col * lit, haze, fog * fog), vec3<f32>(2.2)), 1.0);
 }
 
 // ---- Suelo (modo plano) ----
@@ -266,15 +265,14 @@ fn fs_ground(v: GOut) -> @location(0) vec4<f32> {
     let nn = normalize(vec3<f32>(nm.x, nm.z, -nm.y));
     let view = normalize(g.cam.xyz - v.w);
     var lit = lit_surface(v.w, nn, view, alb, 0.9, 0.0, 1.0, v.pos.xy, 1.0 / v.pos.w);
-    lit = aces(lit * sh.texel.w);
     let hazel = pow(horizon_col(g.light.y), vec3<f32>(2.2));
-    return vec4<f32>(pow(mix(lit, hazel, fog * fog), vec3<f32>(1.0 / 2.2)), 1.0);
+    return vec4<f32>(mix(lit, hazel, fog * fog), 1.0);
   }
   // Sin texturas: tierra procedural.
   let far = clamp(d / 250.0, 0.0, 1.0);
   let n = vn(v.w.xz * 0.05) * 0.5 + vn(v.w.xz * 0.6) * 0.3 + mix(vn(v.w.xz * 5.0), 0.5, far) * 0.2;
   let base = mix(vec3<f32>(0.48, 0.36, 0.25), vec3<f32>(0.68, 0.56, 0.42), n);
-  return vec4<f32>(mix(base, vec3<f32>(0.80, 0.77, 0.71), fog * fog), 1.0);
+  return vec4<f32>(pow(mix(base, vec3<f32>(0.80, 0.77, 0.71), fog * fog), vec3<f32>(2.2)), 1.0);
 }
 
 // ---- Cielo con montanas lejanas ----
@@ -347,5 +345,5 @@ fn fs_sky(v: SOut) -> @location(0) vec4<f32> {
   let mk = mix(0.12, 1.0, day);
   col = mix(col, mix(haze, vec3<f32>(0.62, 0.58, 0.54) * mk, 0.5), m1);
   col = mix(col, mix(haze, vec3<f32>(0.50, 0.45, 0.40) * mk, 0.55), m2);
-  return vec4<f32>(col, 1.0);
+  return vec4<f32>(pow(max(col, vec3<f32>(0.0)), vec3<f32>(2.2)), 1.0);
 }

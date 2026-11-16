@@ -11,6 +11,8 @@ use wgpu::util::DeviceExt;
 
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const FOV: f32 = 1.1;
+/// Formato del buffer HDR de la escena (el post-proceso lo compone en pantalla).
+const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 
 #[repr(C)]
@@ -49,6 +51,10 @@ pub struct Phoenix {
     device: wgpu::Device,
     queue: wgpu::Queue,
     depth: wgpu::TextureView,
+    tg: Targets,
+    post: PostRes,
+    /// [bloom, fuerza del AO, radio del AO]
+    post_k: [f32; 3],
     globals: wgpu::Buffer,
     args: wgpu::Buffer,
     cur: wgpu::Buffer,
@@ -98,10 +104,70 @@ fn depth_view(d: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     })
     .create_view(&Default::default())
+}
+
+/// Texturas de pantalla completa del post-proceso y sus bind groups (se recrean al redimensionar).
+struct Targets {
+    hdr: wgpu::TextureView,
+    ao: wgpu::TextureView,
+    bloom: Vec<wgpu::TextureView>,
+    bg_ao: wgpu::BindGroup,
+    bg_down: Vec<wgpu::BindGroup>,
+    bg_comp: wgpu::BindGroup,
+}
+
+/// Recursos de post-proceso que no dependen del tamano.
+struct PostRes {
+    layout: wgpu::BindGroupLayout,
+    pu: wgpu::Buffer,
+    samp: wgpu::Sampler,
+    dummy: wgpu::TextureView,
+    ao_pl: wgpu::RenderPipeline,
+    down0_pl: wgpu::RenderPipeline,
+    down_pl: wgpu::RenderPipeline,
+    comp_pl: wgpu::RenderPipeline,
+}
+
+fn make_targets(
+    device: &wgpu::Device, w: u32, h: u32, depth: &wgpu::TextureView, globals: &wgpu::Buffer, r: &PostRes,
+) -> Targets {
+    let mk = |fmt, w: u32, h: u32| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&Default::default())
+    };
+    let hdr = mk(HDR, w, h);
+    let ao = mk(wgpu::TextureFormat::R8Unorm, w, h);
+    let bloom: Vec<_> = (1..=4).map(|k| mk(HDR, w >> k, h >> k)).collect();
+    let d = &r.dummy;
+    let bg = |a: &wgpu::TextureView, o: &wgpu::TextureView, b: [&wgpu::TextureView; 4]| {
+        let tv = |binding, v| wgpu::BindGroupEntry { binding, resource: wgpu::BindingResource::TextureView(v) };
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: &r.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: r.pu.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&r.samp) },
+                tv(3, depth), tv(4, a), tv(5, o), tv(6, b[0]), tv(7, b[1]), tv(8, b[2]), tv(9, b[3]),
+            ],
+        })
+    };
+    let bg_ao = bg(d, d, [d, d, d, d]);
+    let bg_down = vec![
+        bg(&hdr, d, [d, d, d, d]), bg(&bloom[0], d, [d, d, d, d]),
+        bg(&bloom[1], d, [d, d, d, d]), bg(&bloom[2], d, [d, d, d, d]),
+    ];
+    let bg_comp = bg(&hdr, &ao, [&bloom[0], &bloom[1], &bloom[2], &bloom[3]]);
+    Targets { hdr, ao, bloom, bg_ao, bg_down, bg_comp }
 }
 
 fn entry(ty: wgpu::BufferBindingType, binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
@@ -470,7 +536,7 @@ pub async fn create(
         },
         fragment: Some(wgpu::FragmentState {
             module: &module, entry_point: Some("fs"), compilation_options: Default::default(),
-            targets: &[Some(cfg.format.into())],
+            targets: &[Some(HDR.into())],
         }),
         primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {
@@ -492,7 +558,7 @@ pub async fn create(
         },
         fragment: Some(wgpu::FragmentState {
             module: &module, entry_point: Some("fs_ground"), compilation_options: Default::default(),
-            targets: &[Some(cfg.format.into())],
+            targets: &[Some(HDR.into())],
         }),
         primitive: Default::default(),
         depth_stencil: Some(wgpu::DepthStencilState {
@@ -514,7 +580,7 @@ pub async fn create(
         },
         fragment: Some(wgpu::FragmentState {
             module: &module, entry_point: Some("fs_sky"), compilation_options: Default::default(),
-            targets: &[Some(cfg.format.into())],
+            targets: &[Some(HDR.into())],
         }),
         primitive: Default::default(),
         depth_stencil: Some(wgpu::DepthStencilState {
@@ -605,10 +671,74 @@ pub async fn create(
         period: queue.get_timestamp_period(),
     });
     let depth = depth_view(&device, w, h);
+    // Post-proceso: AO en pantalla, bloom (4 reducciones) y composicion con ACES.
+    let post_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None, source: wgpu::ShaderSource::Wgsl(include_str!("post.wgsl").into()),
+    });
+    let pe = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: S::FRAGMENT, count: None, ty };
+    let ftex = || wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+    };
+    let ubuf = || wgpu::BindingType::Buffer { ty: B::Uniform, has_dynamic_offset: false, min_binding_size: None };
+    let post_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            pe(0, ubuf()), pe(1, ubuf()), pe(2, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+            pe(3, wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+            }),
+            pe(4, ftex()), pe(5, ftex()), pe(6, ftex()), pe(7, ftex()), pe(8, ftex()), pe(9, ftex()),
+        ],
+    });
+    let ppl = |entry: &str, fmt: wgpu::TextureFormat| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None, bind_group_layouts: &[Some(&post_l)], immediate_size: 0,
+            })),
+            vertex: wgpu::VertexState {
+                module: &post_module, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &post_module, entry_point: Some(entry), compilation_options: Default::default(),
+                targets: &[Some(fmt.into())],
+            }),
+            primitive: Default::default(), depth_stencil: None,
+            multisample: Default::default(), multiview_mask: None, cache: None,
+        })
+    };
+    let dummy = device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: HDR,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        })
+        .create_view(&Default::default());
+    let post = PostRes {
+        pu: device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size: 16, mapped_at_creation: false,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        }),
+        samp: device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        }),
+        ao_pl: ppl("fs_ao", wgpu::TextureFormat::R8Unorm),
+        down0_pl: ppl("fs_down0", HDR),
+        down_pl: ppl("fs_down", HDR),
+        comp_pl: ppl("fs_comp", cfg.format),
+        layout: post_l,
+        dummy,
+    };
+    let tg = make_targets(&device, w, h, &depth, &globals, &post);
     let bundle = {
         let mut b = device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
             label: None,
-            color_formats: &[Some(cfg.format)],
+            color_formats: &[Some(HDR)],
             depth_stencil: Some(wgpu::RenderBundleDepthStencil {
                 format: DEPTH, depth_read_only: false, stencil_read_only: true,
             }),
@@ -628,7 +758,7 @@ pub async fn create(
         b.finish(&wgpu::RenderBundleDescriptor { label: None })
     };
     Ok(Phoenix {
-        surface, cfg, device, queue, depth, globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
+        surface, cfg, device, queue, depth, tg, post, post_k: [0.05, 0.8, 0.6], globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
         cull_bg, draw_pl, bundle, cluster_pl, lux, sviews, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
         frame: 0, tau: 1.0, spacing, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
         tris: Rc::new(tris), full: Rc::new(full),
@@ -642,6 +772,7 @@ impl Phoenix {
         self.cfg.height = h.max(1);
         self.surface.configure(&self.device, &self.cfg);
         self.depth = depth_view(&self.device, self.cfg.width, self.cfg.height);
+        self.tg = make_targets(&self.device, self.cfg.width, self.cfg.height, &self.depth, &self.globals, &self.post);
     }
 
     /// [visibles, tris dibujados, tris a resolucion completa, draws no vacios, cull ms, render ms]
@@ -678,6 +809,11 @@ impl Phoenix {
     /// Exposicion del mapeo de tonos.
     pub fn set_exposure(&mut self, e: f32) {
         self.lux.exposure = e;
+    }
+
+    /// Post-proceso: intensidad del bloom, fuerza del AO (0..1) y radio del AO en metros.
+    pub fn set_post(&mut self, bloom: f32, ao: f32, radius: f32) {
+        self.post_k = [bloom, ao, radius.max(0.05)];
     }
 
     /// Activa o desactiva las sombras del sol (2 cascadas).
@@ -790,7 +926,7 @@ impl Phoenix {
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view, depth_slice: None, resolve_target: None,
+                    view: &self.tg.hdr, depth_slice: None, resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.80, g: 0.77, b: 0.71, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
@@ -799,7 +935,7 @@ impl Phoenix {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard,
+                        load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),
@@ -821,6 +957,29 @@ impl Phoenix {
                 p.draw(0..6, 0..1);
             }
             p.execute_bundles([&self.bundle]);
+        }
+        // Post-proceso: AO -> bloom (4 reducciones) -> composicion en la pantalla.
+        self.queue.write_buffer(&self.post.pu, 0, bytemuck::cast_slice(&[self.lux.exposure, self.post_k[0], self.post_k[1], self.post_k[2]]));
+        {
+            let pass = |enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pl: &wgpu::RenderPipeline, bg: &wgpu::BindGroup| {
+                let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target, depth_slice: None, resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    })],
+                    ..Default::default()
+                });
+                p.set_pipeline(pl);
+                p.set_bind_group(0, bg, &[]);
+                p.draw(0..3, 0..1);
+            };
+            let (t, r) = (&self.tg, &self.post);
+            pass(&mut enc, &t.ao, &r.ao_pl, &t.bg_ao);
+            for k in 0..4 {
+                pass(&mut enc, &t.bloom[k], if k == 0 { &r.down0_pl } else { &r.down_pl }, &t.bg_down[k]);
+            }
+            pass(&mut enc, &view, &r.comp_pl, &t.bg_comp);
         }
         let read = self.frame % 45 == 0 && !self.busy.get();
         let nd = (self.models * self.lods) as usize;
