@@ -24,7 +24,7 @@ canvas{width:100vw;height:100vh;display:block}
 <canvas id="c"></canvas><div id="hud"></div><div id="ui"></div><div id="cap"></div><div id="load">cargando…</div>
 <div id="help">F: vuelo libre (clic = capturar raton, WASD, Espacio/Ctrl, Mayus rapido) · H: estadisticas · R: reiniciar secuencia · L: panel de luz</div>
 <script type="module">
-import init, { create } from "./pkg/phoenix.js";
+import { supported, loadPackage, createEngine, light, watch } from "./phoenix.js";
 const hud = document.getElementById("hud"), cap = document.getElementById("cap"), load = document.getElementById("load");
 window.onunhandledrejection = (e) => { load.style.display = "grid"; load.textContent = "ERROR " + (e.reason && e.reason.message || e.reason); };
 const q = new URLSearchParams(location.search);
@@ -32,18 +32,10 @@ const cine = true;
 const dir = q.get("assets") || "assets-ms";
 const N = +(q.get("n") || (cine ? 2000000 : 160000));
 const EXTRA = cine ? 60000 : 0; // rocas de la escena cinematografica
-const get = async (u, t) => { const r = await fetch(u); return t === "json" ? r.json() : new Uint8Array(await r.arrayBuffer()); };
+if (!(await supported())) { load.textContent = "Este navegador no tiene WebGPU con indirect-first-instance (usa Chrome/Edge recientes)."; throw new Error("sin WebGPU"); }
 load.textContent = "descargando modelos…";
-const meta = await get(dir + "/meta.json", "json");
-const tex = meta.tex || { size: 0, mips: 0, layers: 0 };
-const none = new Uint8Array(0);
-const gr = meta.ground || { size: 0, mips: 0 };
-const [verts, idx, tb, tn, to, gb, gn] = await Promise.all([
-  get(dir + "/verts.bin"), get(dir + "/idx.bin"),
-  meta.tex ? get(dir + "/tex_base.bin") : none, meta.tex ? get(dir + "/tex_normal.bin") : none, meta.tex ? get(dir + "/tex_orm.bin") : none,
-  meta.ground ? get(dir + "/ground_base.bin") : none, meta.ground ? get(dir + "/ground_normal.bin") : none,
-]);
-await init();
+const pkg = await loadPackage(dir);
+const meta = pkg.meta;
 const c = document.getElementById("c"), dpr = Math.min(devicePixelRatio, 2);
 const fit = () => { c.width = innerWidth * dpr; c.height = innerHeight * dpr; };
 fit();
@@ -79,15 +71,14 @@ const buildScene = (count) => {
   }
   return out;
 };
-const p = await create(c, verts, idx, info, new Uint32Array(meta.draws.flat()), meta.models, meta.lods, N + EXTRA, cine, tex.size, tex.mips, tex.layers, tb, tn, to, gr.size, gr.mips, gb, gn, buildScene(N + EXTRA));
+const p = await createEngine(c, pkg, { capacity: N + EXTRA, instances: buildScene(N + EXTRA), environment: cine });
+const guard = watch(p, (m, lost) => { load.style.display = "grid"; load.textContent = (lost ? "" : "Error de GPU: ") + m; });
 window.__p = p;
 // Luces puntuales (culling por clusters en GPU): brasas junto a la estatua heroe y farolillos por el pasillo.
 const baseLights = [];
 {
   // Formato lux: 16 floats por luz (puntual, foco o tubo).
-  const PL = (x, y, z, R, r, g, b, i) => [x, y, z, R, r, g, b, i, 0, 0, 0, 0, 0, 0, 0, 0];
-  const SP = (x, y, z, R, r, g, b, i, dx, dy, dz, cone) => [x, y, z, R, r, g, b, i, 1, dx, dy, dz, cone, 0, 0, 0];
-  const TB = (x, y, z, R, r, g, b, i, dx, dy, dz, len) => [x, y, z, R, r, g, b, i, 2, dx, dy, dz, 0, len, 0, 0];
+  const PL = light.point, SP = light.spot, TB = light.tube;
   const L = [];
   for (const [x, y, z] of [[-3.5, 1.2, -3.5], [3.8, 1.0, -2.5], [0, 1.0, 4]]) L.push(...PL(x, y, z, 9, 1.0, 0.55, 0.25, 18));
   for (let z = -120; z > -900; z -= 45) L.push(...PL(0, 1.5, z, 14, 1.0, 0.6, 0.3, 14));
@@ -237,6 +228,7 @@ const loop = (now) => {
   }
   const a = performance.now();
   p.frame(cam.x, cam.y, cam.z, cam.yaw, cam.pitch);
+  guard();
   cpu = cpu * 0.95 + (performance.now() - a) * 0.05;
   ms = ms * 0.95 + (now - last) * 0.05; last = now;
   if (++f % 20 === 0) {

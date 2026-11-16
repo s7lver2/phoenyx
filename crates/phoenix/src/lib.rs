@@ -106,6 +106,11 @@ pub struct Phoenix {
     full: Rc<Vec<u32>>,
 }
 
+thread_local! {
+    /// Ultimo error de GPU no capturado o motivo de perdida del dispositivo (para el anfitrion).
+    static GPU_STATUS: std::cell::RefCell<(bool, String)> = const { std::cell::RefCell::new((false, String::new())) };
+}
+
 fn depth_view(d: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
     d.create_texture(&wgpu::TextureDescriptor {
         label: None,
@@ -352,6 +357,12 @@ pub async fn create(
         .await
         .map_err(err)?;
 
+    device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
+        GPU_STATUS.with(|s| s.borrow_mut().1 = e.to_string());
+    }));
+    device.set_device_lost_callback(|reason, msg| {
+        GPU_STATUS.with(|s| *s.borrow_mut() = (true, format!("{reason:?}: {msg}")));
+    });
     let mut cfg = surface.get_default_config(&adapter, w, h).ok_or("superficie sin config")?;
     cfg.present_mode = wgpu::PresentMode::AutoVsync;
     surface.configure(&device, &cfg);
@@ -887,6 +898,17 @@ impl Phoenix {
     /// Post-proceso: intensidad del bloom, fuerza del AO (0..1) y radio del AO en metros.
     pub fn set_post(&mut self, bloom: f32, ao: f32, radius: f32) {
         self.post_k = [bloom, ao, radius.max(0.05)];
+    }
+
+    /// El dispositivo de GPU se perdio (driver reiniciado, pestana en segundo plano prolongada...).
+    /// El anfitrion debe recrear el motor.
+    pub fn is_lost(&self) -> bool {
+        GPU_STATUS.with(|s| s.borrow().0)
+    }
+
+    /// Ultimo error de GPU (cadena vacia si no hay) y se borra al leerlo.
+    pub fn take_error(&self) -> String {
+        GPU_STATUS.with(|s| std::mem::take(&mut s.borrow_mut().1))
     }
 
     /// Culling por oclusion con la piramide Hi-Z del frame anterior.
