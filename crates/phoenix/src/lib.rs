@@ -27,6 +27,8 @@ struct Globals {
     grid: [f32; 4],
     prev_vp: [f32; 16],
     vw: [f32; 4],
+    /// x = diametro minimo en pixeles para dibujar una instancia
+    tune: [f32; 4],
 }
 
 /// Una vista de sombras: su propio culling GPU (count/scan/scatter) y su cola de draws.
@@ -88,6 +90,8 @@ pub struct Phoenix {
     prev_vp: Mat4,
     hiz_on: bool,
     hiz_ready: bool,
+    min_px: f32,
+    far_tol: f32,
     inst_buf: wgpu::Buffer,
     chunks: wgpu::Buffer,
     chunk_pl: wgpu::ComputePipeline,
@@ -100,7 +104,7 @@ pub struct Phoenix {
     sky_pl: wgpu::RenderPipeline,
     busy: Rc<Cell<bool>>,
     // [visibles, tris dibujados, tris a resolucion completa, draws no vacios, cull ms, render ms]
-    stats: Rc<Cell<[f64; 6]>>,
+    stats: Rc<Cell<[f64; 8]>>,
     ts: Option<Ts>,
     tris: Rc<Vec<u32>>,
     full: Rc<Vec<u32>>,
@@ -225,7 +229,7 @@ fn make_targets(
         .create_view(&Default::default())
     };
     let hdr = mk(HDR, w, h);
-    let ao = mk(wgpu::TextureFormat::R8Unorm, w, h);
+    let ao = mk(wgpu::TextureFormat::R8Unorm, w >> 1, h >> 1);
     let bloom: Vec<_> = (1..=4).map(|k| mk(HDR, w >> k, h >> k)).collect();
     let d = &r.dummy;
     let bg = |a: &wgpu::TextureView, o: &wgpu::TextureView, b: [&wgpu::TextureView; 4]| {
@@ -414,7 +418,7 @@ pub async fn create(
         label: None, size: (nd * 4) as u64, mapped_at_creation: false,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
-    let stage_size = ((nd * 20 + 63) / 64 * 64 + 32) as u64;
+    let stage_size = ((nd * 20 + 63) / 64 * 64 + 64) as u64;
     let staging = device.create_buffer(&wgpu::BufferDescriptor {
         label: None, size: stage_size, mapped_at_creation: false,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
@@ -696,9 +700,9 @@ pub async fn create(
     let sviews: Vec<SView> = (0..2).map(mk_view).collect();
 
     let ts = device.features().contains(wgpu::Features::TIMESTAMP_QUERY).then(|| Ts {
-        qs: device.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty: wgpu::QueryType::Timestamp, count: 4 }),
+        qs: device.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty: wgpu::QueryType::Timestamp, count: 8 }),
         resolve: device.create_buffer(&wgpu::BufferDescriptor {
-            label: None, size: 32, mapped_at_creation: false,
+            label: None, size: 64, mapped_at_creation: false,
             usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
         }),
         period: queue.get_timestamp_period(),
@@ -842,7 +846,7 @@ pub async fn create(
     Ok(Phoenix {
         surface, cfg, device, queue, depth, tg, post, post_k: [0.05, 0.8, 0.6], globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
         cull_bg, draw_pl, bundle, cluster_pl, lux, sviews, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: n0, models, lods,
-        frame: 0, tau: 1.0, capacity: count, hiz, hiz_res, prev_vp: Mat4::IDENTITY, hiz_on: true, hiz_ready: false, inst_buf, chunks, chunk_pl, dirty: true, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
+        frame: 0, tau: 1.0, capacity: count, hiz, hiz_res, prev_vp: Mat4::IDENTITY, hiz_on: true, hiz_ready: false, min_px: 1.0, far_tol: 0.6, inst_buf, chunks, chunk_pl, dirty: true, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 8])), ts,
         tris: Rc::new(tris), full: Rc::new(full),
     })
 }
@@ -859,7 +863,8 @@ impl Phoenix {
         self.hiz_ready = false;
     }
 
-    /// [visibles, tris dibujados, tris a resolucion completa, draws no vacios, cull ms, render ms]
+    /// [visibles, tris dibujados, tris a resolucion completa, draws no vacios, cull ms, render ms,
+    ///  sombras ms, hiz+post ms]
     pub fn stats(&self) -> Vec<f64> {
         self.stats.get().to_vec()
     }
@@ -909,6 +914,17 @@ impl Phoenix {
     /// Ultimo error de GPU (cadena vacia si no hay) y se borra al leerlo.
     pub fn take_error(&self) -> String {
         GPU_STATUS.with(|s| std::mem::take(&mut s.borrow_mut().1))
+    }
+
+    /// Diametro minimo (px) para dibujar una instancia; por debajo se descarta (1 = sin diferencia visible).
+    pub fn set_min_pixels(&mut self, px: f32) {
+        self.min_px = px.max(0.0);
+    }
+
+    /// Aumento de la tolerancia del LOD con la distancia (0 = tolerancia constante); a 500 m o mas
+    /// la tolerancia es `tau * (1 + k)`.
+    pub fn set_far_tolerance(&mut self, k: f32) {
+        self.far_tol = k.max(0.0);
     }
 
     /// Culling por oclusion con la piramide Hi-Z del frame anterior.
@@ -962,6 +978,7 @@ impl Phoenix {
             grid: [self.cfg.width as f32, self.cfg.height as f32, 0.3, 150.0],
             prev_vp: self.prev_vp.to_cols_array(),
             vw: [0.0, if self.hiz_on && self.hiz_ready { 1.0 } else { 0.0 }, 0.0, self.lux.n_lights as f32],
+            tune: [self.min_px, self.far_tol, 0.0, 0.0],
         };
         // Cascadas de sombras del sol (las calcula lux; phoenix las usa para el culling y el render).
         let shadows = self.flat && self.textured && self.lux.shadows_active();
@@ -973,6 +990,7 @@ impl Phoenix {
                 gc.planes = lux::planes_of(c.view_proj);
                 gc.inv_vp = c.view_proj.inverse().to_cols_array();
                 gc.misc[3] = 1.5;
+                gc.tune[0] = 1.0;
                 gc.vw = [1.0, lux::SHADOW_RES as f32 / (2.0 * c.radius), 1.0, 0.0];
                 let sv = &self.sviews[i];
                 self.queue.write_buffer(&sv.globals, 0, bytemuck::bytes_of(&gc));
@@ -1040,6 +1058,11 @@ impl Phoenix {
                         depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
                         stencil_ops: None,
                     }),
+                    timestamp_writes: self.ts.as_ref().map(|t| wgpu::RenderPassTimestampWrites {
+                        query_set: &t.qs,
+                        beginning_of_pass_write_index: if i == 0 { Some(4) } else { None },
+                        end_of_pass_write_index: if i == 1 { Some(5) } else { None },
+                    }),
                     ..Default::default()
                 });
                 p.execute_bundles([&sv.bundle]);
@@ -1089,6 +1112,9 @@ impl Phoenix {
                     view: &self.hiz.levels[k], depth_slice: None, resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
                 })],
+                timestamp_writes: self.ts.as_ref().filter(|_| k == 0).map(|t| wgpu::RenderPassTimestampWrites {
+                    query_set: &t.qs, beginning_of_pass_write_index: Some(6), end_of_pass_write_index: None,
+                }),
                 ..Default::default()
             });
             p.set_pipeline(if k == 0 { &self.hiz_res.pl0 } else { &self.hiz_res.pln });
@@ -1100,13 +1126,17 @@ impl Phoenix {
         // Post-proceso: AO -> bloom (4 reducciones) -> composicion en la pantalla.
         self.queue.write_buffer(&self.post.pu, 0, bytemuck::cast_slice(&[self.lux.exposure, self.post_k[0], self.post_k[1], self.post_k[2]]));
         {
-            let pass = |enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pl: &wgpu::RenderPipeline, bg: &wgpu::BindGroup| {
+            let ts = &self.ts;
+            let pass = |enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pl: &wgpu::RenderPipeline, bg: &wgpu::BindGroup, last: bool| {
                 let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: None,
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: target, depth_slice: None, resolve_target: None,
                         ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
                     })],
+                    timestamp_writes: ts.as_ref().filter(|_| last).map(|t| wgpu::RenderPassTimestampWrites {
+                        query_set: &t.qs, beginning_of_pass_write_index: None, end_of_pass_write_index: Some(7),
+                    }),
                     ..Default::default()
                 });
                 p.set_pipeline(pl);
@@ -1114,11 +1144,11 @@ impl Phoenix {
                 p.draw(0..3, 0..1);
             };
             let (t, r) = (&self.tg, &self.post);
-            pass(&mut enc, &t.ao, &r.ao_pl, &t.bg_ao);
+            pass(&mut enc, &t.ao, &r.ao_pl, &t.bg_ao, false);
             for k in 0..4 {
-                pass(&mut enc, &t.bloom[k], if k == 0 { &r.down0_pl } else { &r.down_pl }, &t.bg_down[k]);
+                pass(&mut enc, &t.bloom[k], if k == 0 { &r.down0_pl } else { &r.down_pl }, &t.bg_down[k], false);
             }
-            pass(&mut enc, &view, &r.comp_pl, &t.bg_comp);
+            pass(&mut enc, &view, &r.comp_pl, &t.bg_comp, true);
         }
         let read = self.frame % 45 == 0 && !self.busy.get();
         let nd = (self.models * self.lods) as usize;
@@ -1126,8 +1156,8 @@ impl Phoenix {
         if read {
             enc.copy_buffer_to_buffer(&self.args, 0, &self.staging, 0, (nd * 20) as u64);
             if let Some(t) = &self.ts {
-                enc.resolve_query_set(&t.qs, 0..4, &t.resolve, 0);
-                enc.copy_buffer_to_buffer(&t.resolve, 0, &self.staging, ts_off, 32);
+                enc.resolve_query_set(&t.qs, 0..8, &t.resolve, 0);
+                enc.copy_buffer_to_buffer(&t.resolve, 0, &self.staging, ts_off, 64);
             }
         }
         self.queue.submit([enc.finish()]);
@@ -1152,10 +1182,12 @@ impl Phoenix {
                     let mut s = stats.get();
                     s[..4].copy_from_slice(&[vis, drawn, fullres, used]);
                     if let Some(p) = period {
-                        let t: &[u64] = bytemuck::cast_slice(&d[ts_off as usize..ts_off as usize + 32]);
+                        let t: &[u64] = bytemuck::cast_slice(&d[ts_off as usize..ts_off as usize + 64]);
                         let ms = |a: u64, b: u64| b.saturating_sub(a) as f64 * p as f64 * 1e-6;
                         s[4] = ms(t[0], t[1]);
                         s[5] = ms(t[2], t[3]);
+                        s[6] = ms(t[4], t[5]);
+                        s[7] = ms(t[6], t[7]);
                     }
                     stats.set(s);
                     drop(d);

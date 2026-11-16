@@ -10,6 +10,7 @@ struct Globals {
   grid: vec4<f32>,         // ancho, alto de pantalla, near y far del clustering de luces
   prev_vp: mat4x4<f32>,    // vista-proyeccion del frame anterior (Hi-Z)
   vw: vec4<f32>,           // x: vista ortografica (sombras), y: px por unidad (ortografica), z: sin fundido de LOD, w: n luces
+  tune: vec4<f32>,         // x: diametro minimo en pixeles, y: aumento de la tolerancia del LOD lejos (100..500 m)
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -72,19 +73,21 @@ fn pick(i: u32) -> Pick {
   }
   let d = max(distance(a.xyz, g.cam.xyz), 0.001);
   let k = select(g.cam.w * r / d, g.vw.y * r, g.vw.x > 0.5);   // px por unidad de error del modelo
-  if (2.0 * k < 1.0) { return o; }    // menor de 1 px: no se dibuja
+  if (2.0 * k < g.tune.x) { return o; }    // menor de 1 px: no se dibuja
   if (g.vw.y > 0.5 && g.vw.x < 0.5 && occluded(a.xyz, r)) { return o; }
   let m = u32(b.x);
   let nl = u32(g.misc.z);
+  // La tolerancia crece con la distancia: lejos, medio pixel mas de error no se aprecia.
+  let tol = g.misc.w * (1.0 + select(g.tune.y * smoothstep(100.0, 500.0, d), 0.0, g.vw.x > 0.5));
   var l = 0u;
   // LOD mas grueso cuyo error proyectado cabe en la tolerancia.
   for (var kk = 0u; kk + 1u < nl; kk++) {
     let c = nl - 1u - kk;
-    if (lodinfo[m * 16u + 1u + c] * k <= g.misc.w) { l = c; break; }
+    if (lodinfo[m * 16u + 1u + c] * k <= tol) { l = c; break; }
   }
   o.d0 = i32(m * nl + l);
   if (l + 1u < nl) {
-    let ratio = lodinfo[m * 16u + 2u + l] * k / g.misc.w;   // error del nivel siguiente / tolerancia
+    let ratio = lodinfo[m * 16u + 2u + l] * k / tol;   // error del nivel siguiente / tolerancia
     if (ratio < FADE_W && g.vw.z < 0.5) {
       o.t = u32(clamp((FADE_W - ratio) / (FADE_W - 1.0), 0.0, 1.0) * 127.0);
       if (o.t > 0u) { o.d1 = o.d0 + 1; }

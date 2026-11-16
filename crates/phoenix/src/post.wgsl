@@ -10,6 +10,7 @@ struct Globals {
   grid: vec4<f32>,
   prev_vp: mat4x4<f32>,
   vw: vec4<f32>,
+  tune: vec4<f32>,
 };
 struct PU { p: vec4<f32> };   // x exposicion, y bloom, z fuerza del AO, w radio del AO (m)
 
@@ -59,9 +60,10 @@ fn bayer4(p: vec2<u32>) -> f32 {
 fn fs_ao(v: FOut) -> @location(0) f32 {
   let dims = textureDimensions(depth_t);
   let size = vec2<f32>(dims);
-  let px = vec2<i32>(v.pos.xy);
+  // El AO se calcula a media resolucion: cada texel muestrea el centro de un bloque de 2x2 pixeles.
+  let px = vec2<i32>(v.pos.xy) * 2;
   let d = textureLoad(depth_t, px, 0);
-  let P = world_at(v.pos.xy, d, size);
+  let P = world_at(floor(v.pos.xy) * 2.0 + 1.0, d, size);
   // Normal por derivadas (antes de cualquier return: control de flujo uniforme).
   var n = normalize(cross(dpdy(P), dpdx(P)));
   if (dot(n, g.cam.xyz - P) < 0.0) { n = -n; }
@@ -69,7 +71,7 @@ fn fs_ao(v: FOut) -> @location(0) f32 {
   if (d >= 1.0 || dist > 150.0) { return 1.0; }
   let R = pu.p.w;
   let lzp = lin_depth(d);
-  let rot = bayer4(vec2<u32>(px)) * 6.2831853;
+  let rot = bayer4(vec2<u32>(v.pos.xy)) * 6.2831853;
   var occ = 0.0;
   for (var i = 0u; i < 12u; i++) {
     // Direccion en espiral (Fibonacci) rotada por pixel, volteada al hemisferio de la normal.
@@ -129,10 +131,12 @@ fn fs_comp(v: FOut) -> @location(0) vec4<f32> {
   // AO: desenfoque 4x4 que respeta los bordes de profundidad.
   var sum = 0.0;
   var wsum = 0.0;
+  let hd = vec2<i32>(textureDimensions(tex_ao));
   for (var j = -2; j < 2; j++) {
     for (var i = -2; i < 2; i++) {
-      let q = clamp(px + vec2<i32>(i, j), vec2<i32>(0), dims - vec2<i32>(1));
-      let w = 1.0 / (1.0 + 40.0 * abs(lin_depth(textureLoad(depth_t, q, 0)) - dc) / max(dc, 0.3));
+      let q = clamp(px / 2 + vec2<i32>(i, j), vec2<i32>(0), hd - vec2<i32>(1));
+      let qf = min(q * 2 + vec2<i32>(1), dims - vec2<i32>(1));
+      let w = 1.0 / (1.0 + 40.0 * abs(lin_depth(textureLoad(depth_t, qf, 0)) - dc) / max(dc, 0.3));
       sum += textureLoad(tex_ao, q, 0).r * w;
       wsum += w;
     }
