@@ -544,6 +544,7 @@ dependencies = [
 name = "phoenix-bake"
 version = "0.0.1"
 dependencies = [
+ "glam",
  "gltf",
  "image",
  "meshopt",

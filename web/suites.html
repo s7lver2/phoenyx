@@ -16,7 +16,7 @@ canvas{width:100vw;height:100vh;display:block}
 <canvas id="c"></canvas><div id="hud"></div><div id="ui"></div><div id="load">cargando…</div>
 <div id="help">F: automatico / vuelo libre (clic = capturar raton, WASD, Mayus rapido) · U: panel</div>
 <script type="module">
-import { supported, loadPackage, createEngine, light, watch } from "./phoenix.js";
+import { supported, loadPackage, createEngine, light, watch, loadSkin, addSkin } from "./phoenix.js";
 const load = document.getElementById("load"), hud = document.getElementById("hud"), ui = document.getElementById("ui");
 const q = new URLSearchParams(location.search);
 const W = +(q.get("size") || 200), H = W, CELL = 1.5, HEIGHT = 2.7;
@@ -117,6 +117,11 @@ const farthest = (() => { let best = 0, bd = -1; for (let i = 0; i < W * H; i++)
 const path = []; for (let k = farthest; k >= 0; k = parent[k]) path.push(k); path.reverse();
 const pos = (k) => [((k % W) + 0.5) * CELL, ((k / W) | 0) * CELL + CELL / 2];
 const cam = { x: pos(0)[0], y: 1.6, z: pos(0)[1], yaw: 0, pitch: 0, free: false };
+// Personajes con huesos a lo largo del recorrido (si existe el paquete assets-hazmat).
+let skinId = -1, skinMeta = null;
+try { const sk = await loadSkin(q.get("skin") || "assets-hazmat"); skinMeta = sk.meta; skinId = addSkin(p, sk); } catch (e) { console.warn("sin personajes", e); }
+const crowd = [];
+if (skinId >= 0) for (let i = 0; i < 8; i++) { const cell = path[Math.min(path.length - 1, 12 + i * 14)], pp = pos(cell); crowd.push({ x: pp[0], z: pp[1], clip: [0, 3, 4, 6][i % 4], yaw: i * 1.7 }); }
 const keys = {};
 addEventListener("keydown", (e) => { keys[e.code] = true; if (e.code === "KeyF") { cam.free = !cam.free; if (!cam.free) document.exitPointerLock(); } if (e.code === "KeyU") ui.style.display = ui.style.display === "none" ? "block" : "none"; });
 addEventListener("keyup", (e) => { keys[e.code] = false; });
@@ -144,6 +149,11 @@ const loop = (now) => {
     cam.dustT = 0.05;
     const f = [Math.sin(cam.yaw) * 1.2, 0, -Math.cos(cam.yaw) * 1.2];
     p.emit_particles(new Float32Array([cam.x + f[0], cam.y - 0.5, cam.z + f[2], 0, 0.05, 0, 0.4, 0.5, 6, 0.05, 0.05, 0, 0.5, 0.45, 0.35, 0.5, 1]), 2);
+  }
+  if (skinId >= 0) {
+    const t = now / 1000, d = new Float32Array(crowd.length * 8);
+    crowd.forEach((c, i) => d.set([c.x, 0, c.z, 1, c.yaw, c.clip, t + i * 0.37, 0], i * 8));
+    p.set_skin_instances(skinId, d);
   }
   p.frame(cam.x, cam.y, cam.z, cam.yaw, cam.pitch);
   guard();

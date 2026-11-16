@@ -4,6 +4,7 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
-gltf = { version = "1.4.1", default-features = false, features = ["utils", "import"] }
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "import", "names"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 meshopt = "0.7"
+glam = "0.30"

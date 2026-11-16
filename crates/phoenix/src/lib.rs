@@ -10,6 +10,8 @@ use wasm_bindgen::prelude::*;
 use wgpu::util::DeviceExt;
 
 mod particles;
+mod skin;
+use skin::{SkinModel, SkinSys};
 use particles::Particles;
 
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -113,6 +115,8 @@ pub struct Phoenix {
     tris: Rc<Vec<u32>>,
     full: Rc<Vec<u32>>,
     parts: Particles,
+    skin_sys: SkinSys,
+    skins: Vec<SkinModel>,
 }
 
 thread_local! {
@@ -849,11 +853,12 @@ pub async fn create(
         b.finish(&wgpu::RenderBundleDescriptor { label: None })
     };
     let parts = Particles::new(&device, HDR, DEPTH, 65536);
+    let skin_sys = SkinSys::new(&device, lux::WGSL, &draw_l, &gnd_l, HDR, DEPTH);
     Ok(Phoenix {
         surface, cfg, device, queue, depth, tg, post, post_k: [0.05, 0.8, 0.6], globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
         cull_bg, draw_pl, bundle, cluster_pl, lux, sviews, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: n0, models, lods,
         frame: 0, tau: 1.0, capacity: count, hiz, hiz_res, prev_vp: Mat4::IDENTITY, hiz_on: true, hiz_ready: false, min_px: 1.0, far_tol: 0.6, env_on: true, inst_buf, chunks, chunk_pl, dirty: true, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 8])), ts,
-        tris: Rc::new(tris), full: Rc::new(full), parts,
+        tris: Rc::new(tris), full: Rc::new(full), parts, skin_sys, skins: vec![],
     })
 }
 
@@ -971,6 +976,22 @@ impl Phoenix {
 
     pub fn count(&self) -> u32 {
         self.n
+    }
+
+    /// Anade un personaje con huesos (paquete de `phoenix-bake --kind skin`); devuelve su indice.
+    /// `clips`: 4 floats por clip `[primer fotograma, fotogramas, fps, duracion]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_skin(&mut self, verts: &[u8], idx: &[u8], mats: &[u8], clips: &[f32], bones: u32, tex_size: u32, tex_mips: u32, tex: &[u8]) -> u32 {
+        let m = self.skin_sys.add(&self.device, &self.queue, verts, idx, mats, clips, bones, tex_size, tex_mips, tex);
+        self.skins.push(m);
+        self.skins.len() as u32 - 1
+    }
+
+    /// Instancias de un personaje: 8 floats `[x, y, z, escala, yaw, clip, tiempo en s, 0]` cada una.
+    pub fn set_skin_instances(&mut self, model: u32, data: &[f32]) {
+        if let Some(m) = self.skins.get_mut(model as usize) {
+            m.set(&self.queue, data);
+        }
     }
 
     /// Emite `count` particulas (formato de `p` en `Particles::emit`: 17 floats).
@@ -1151,6 +1172,9 @@ impl Phoenix {
                 p.draw(0..6, 0..1);
             }
             p.execute_bundles([&self.bundle]);
+            for m in &self.skins {
+                m.draw(&mut p, &self.skin_sys.pl, &self.draw_bg, &self.gnd_bg);
+            }
             if self.parts.live > 0 {
                 p.set_pipeline(&self.parts.pl);
                 p.set_bind_group(0, &self.parts.bg, &[]);

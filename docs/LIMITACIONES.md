@@ -2,7 +2,7 @@
 
 ## Lo que no hace el motor
 - **No es Nanite de verdad:** el LOD es discreto por instancia, sin jerarquía de clusters, sin visibility buffer ni rasterizado de microtriángulos.
-- **Sin animación esquelética:** no puede dibujar personajes con huesos (en Las Suites: Facelings, partygoers). Haría falta skinning en GPU o un renderer híbrido con three.js para los personajes.
+- **Personajes con huesos:** sí (skinning en GPU con animación horneada, ver docs/ASSETS.md), con límites: 4 huesos por vértice, hasta 255 huesos, una malla y una textura base por personaje, sin mezcla entre clips, sin sombras proyectadas por personajes, sin culling (hasta 2.048 instancias por modelo) y sin retargeting ni IK.
 - **Partículas:** hay (GPU, sin estado, billboards con mezcla alfa o aditiva, hasta 65.536, `emit_particles`); sin sorting ni sombras, y sin texturas de sprite (disco suave). **Sin transparencias en mallas ni UI.**
 - **Solo WebGPU** con `indirect-first-instance`. Sin WebGPU, el anfitrión tiene que usar otro renderer.
 - Rotación de instancias solo en Y; sin jerarquías de transformaciones.
@@ -32,3 +32,6 @@
 ## Verificación
 - Sin tests automáticos (regla del proyecto). Todo se ha comprobado a mano en el navegador de la app.
 - La demo de exteriores no se volvió a ejecutar tras los últimos cambios de iluminación de focos (sombras de focos, tangentes y NaN); la de interiores sí.
+
+## Avisos de validación sin resolver
+- En Chrome aparece a menudo `Both beginningOfPassWriteIndex and endOfPassWriteIndex are undefined` seguido de `Invalid CommandBuffer`. Ya estaba antes del skinning (se comprobó con el commit 9fb8f6b) y el render sigue saliendo, pero no se ha localizado qué pasada lo causa.

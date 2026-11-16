@@ -72,3 +72,19 @@ export function watch(engine, onProblem) {
     if (e) onProblem(e, false);
   };
 }
+
+/** Carga un personaje con huesos horneado con `phoenix-bake --kind skin`. */
+export async function loadSkin(dir) {
+  const meta = await get(dir + "/skin.json", true);
+  const [verts, idx, mats, tex] = await Promise.all([
+    get(dir + "/skin_verts.bin"), get(dir + "/skin_idx.bin"), get(dir + "/skin_mats.bin"), get(dir + "/skin_tex.bin"),
+  ]);
+  return { meta, verts, idx, mats, tex };
+}
+
+/** Anade el personaje al motor y devuelve su indice (para `set_skin_instances`). Instancias: 8 floats [x, y, z, escala, yaw, clip, tiempo, 0]. */
+export function addSkin(engine, skin) {
+  const m = skin.meta;
+  const clips = new Float32Array(m.clips.flatMap((c) => [c.first, c.frames, c.fps, c.dur]));
+  return engine.add_skin(skin.verts, skin.idx, skin.mats, clips, m.bones, m.tex_size, m.tex_mips, skin.tex);
+}

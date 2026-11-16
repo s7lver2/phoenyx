@@ -363,6 +363,8 @@ fn pack_mips(img: &image::RgbaImage, size: u32) -> Vec<u8> {
     out
 }
 
+mod skin;
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let arg = |k: &str, d: &str| {
@@ -376,6 +378,10 @@ fn main() {
     let glbs = arg("--glb", "");
     let ground_dir = arg("--ground", "");
     let gsize: u32 = arg("--gsize", "2048").parse().unwrap();
+    if kind == "skin" {
+        skin::run(&glbs, &out, arg("--fps", "30").parse().unwrap(), tex_size);
+        return;
+    }
     fs::create_dir_all(&out).unwrap();
 
     // Lista de modelos a generar (GLB reales o procedurales).
