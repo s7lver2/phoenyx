@@ -17,6 +17,8 @@ wasm-bindgen --target web --out-dir web/pkg-ai target/wasm32-unknown-unknown/rel
 | `Grid.astar(ax, ay, bx, by, smooth)` + `path()` | Ruta entre celdas, en metros `[x, z, …]`; con `smooth` quita puntos con línea de visión. |
 | `Grid.sees(ax, az, bx, bz)` | Línea de visión sobre la rejilla. |
 | `in_cone(...)`, `hears(...)` | Percepción: cono de visión/linterna y oído por radio. |
+| `Clock(hz, max_ticks)` | Paso fijo: `advance(dt)` devuelve los ticks a simular; `alpha()` para interpolar el dibujo. |
+| `Store(capacidad, columnas)` | Entidades en columnas f32 con ids con generación (`spawn`, `despawn`, `valid`, `get`, `set`, `row`, `alive_ids`). |
 | `Near(ancho, alto, celda)` | Hash espacial: `rebuild(posiciones)` una vez por tick y `query(x, z, r)` para «quién está cerca». |
 
 Los buffers se reutilizan entre llamadas; `path()` y `query()` copian el resultado.
@@ -28,6 +30,6 @@ Los buffers se reutilizan entre llamadas; `path()` y `query()` copian el resulta
 
 ## Pendiente
 
-- Sin ECS ni simulación a paso fijo todavía (siguiente capa del orden: render → assets → simulación → IA).
+- `Store` es un almacén de columnas, no un ECS con sistemas: el juego recorre `alive_ids()` y aplica sus comportamientos.
 - Solo rejillas 2D de 4 vecinos; sin mallas de navegación 3D ni costes por celda.
 - Sin integración con el juego: no se ha sustituido nada en `shared/src` todavía.

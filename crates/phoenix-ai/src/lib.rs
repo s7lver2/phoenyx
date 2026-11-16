@@ -330,3 +330,104 @@ impl Near {
         self.out.clone()
     }
 }
+
+/// Reloj de paso fijo: convierte el tiempo real en ticks enteros (determinista; tope anti-espiral).
+#[wasm_bindgen]
+pub struct Clock {
+    step: f32,
+    acc: f32,
+    max_ticks: u32,
+    tick: u64,
+}
+
+#[wasm_bindgen]
+impl Clock {
+    #[wasm_bindgen(constructor)]
+    pub fn new(hz: f32, max_ticks: u32) -> Clock {
+        Clock { step: 1.0 / hz, acc: 0.0, max_ticks, tick: 0 }
+    }
+    /// Suma `dt` segundos y devuelve cuántos ticks hay que simular ahora.
+    pub fn advance(&mut self, dt: f32) -> u32 {
+        self.acc += dt.max(0.0);
+        let n = ((self.acc / self.step) as u32).min(self.max_ticks);
+        self.acc = if n == self.max_ticks { 0.0 } else { self.acc - n as f32 * self.step };
+        self.tick += n as u64;
+        n
+    }
+    pub fn step(&self) -> f32 {
+        self.step
+    }
+    /// Fracción hasta el siguiente tick (para interpolar el dibujo).
+    pub fn alpha(&self) -> f32 {
+        self.acc / self.step
+    }
+    pub fn tick(&self) -> f64 {
+        self.tick as f64
+    }
+}
+
+/// Almacén de entidades en columnas (SoA): ids con generación, columnas f32 contiguas por campo.
+/// El juego define qué significa cada columna (x, z, yaw, hp, temporizadores…).
+#[wasm_bindgen]
+pub struct Store {
+    cols: usize,
+    data: Vec<f32>,
+    gens: Vec<u32>,
+    alive: Vec<u8>,
+    free: Vec<u32>,
+    live: Vec<u32>,
+}
+
+#[wasm_bindgen]
+impl Store {
+    #[wasm_bindgen(constructor)]
+    pub fn new(capacity: u32, cols: u32) -> Store {
+        let (c, k) = (capacity as usize, cols as usize);
+        Store { cols: k, data: vec![0.0; c * k], gens: vec![0; c], alive: vec![0; c], free: (0..capacity).rev().collect(), live: vec![] }
+    }
+    /// Crea una entidad; devuelve `generación << 20 | índice` (u32::MAX si está lleno).
+    pub fn spawn(&mut self) -> u32 {
+        match self.free.pop() {
+            Some(i) => {
+                let i = i as usize;
+                self.alive[i] = 1;
+                self.data[i * self.cols..(i + 1) * self.cols].fill(0.0);
+                (self.gens[i] << 20) | i as u32
+            }
+            None => u32::MAX,
+        }
+    }
+    pub fn despawn(&mut self, id: u32) {
+        if self.valid(id) {
+            let i = (id & 0xFFFFF) as usize;
+            self.alive[i] = 0;
+            self.gens[i] = (self.gens[i] + 1) & 0xFFF;
+            self.free.push(i as u32);
+        }
+    }
+    pub fn valid(&self, id: u32) -> bool {
+        let i = (id & 0xFFFFF) as usize;
+        i < self.alive.len() && self.alive[i] == 1 && self.gens[i] == id >> 20
+    }
+    pub fn get(&self, id: u32, col: u32) -> f32 {
+        self.data[(id & 0xFFFFF) as usize * self.cols + col as usize]
+    }
+    pub fn set(&mut self, id: u32, col: u32, v: f32) {
+        self.data[(id & 0xFFFFF) as usize * self.cols + col as usize] = v;
+    }
+    /// Índices vivos (para iterar sin recorrer los huecos).
+    pub fn alive_ids(&mut self) -> Vec<u32> {
+        self.live.clear();
+        for (i, &a) in self.alive.iter().enumerate() {
+            if a == 1 {
+                self.live.push((self.gens[i] << 20) | i as u32);
+            }
+        }
+        self.live.clone()
+    }
+    /// Todas las columnas de una entidad `[col0, col1, …]` (p. ej. para enviar por red).
+    pub fn row(&self, id: u32) -> Vec<f32> {
+        let i = (id & 0xFFFFF) as usize;
+        self.data[i * self.cols..(i + 1) * self.cols].to_vec()
+    }
+}
