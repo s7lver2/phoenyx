@@ -17,17 +17,27 @@ struct Globals {
 @group(0) @binding(4) var<storage, read_write> cur: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> vis: array<u32>;
 
-// Devuelve el draw (modelo * LOD + lod) de la instancia, o -1 si no se dibuja.
-fn pick(i: u32) -> i32 {
+// Seleccion de LOD con fundido: el nivel fino se dibuja siempre; si el siguiente nivel grueso esta
+// a punto de ser aceptable (error entre 1x y FADE_W x la tolerancia) tambien se emite el grueso y
+// ambos se reparten los pixeles con un dither complementario (sin saltos visibles).
+const FADE_W = 1.6;
+struct Pick {
+  d0: i32,   // draw del nivel fino (o unico)
+  d1: i32,   // draw del nivel grueso en fundido, o -1
+  t: u32,    // peso del grueso, 0..127
+};
+
+fn pick(i: u32) -> Pick {
+  var o = Pick(-1, -1, 0u);
   let a = inst[2u * i];
   let b = inst[2u * i + 1u];
   let r = a.w;
   for (var p = 0u; p < 6u; p++) {
-    if (dot(g.planes[p].xyz, a.xyz) + g.planes[p].w < -r) { return -1; }
+    if (dot(g.planes[p].xyz, a.xyz) + g.planes[p].w < -r) { return o; }
   }
   let d = max(distance(a.xyz, g.cam.xyz), 0.001);
   let k = g.cam.w * r / d;            // px por unidad de error del modelo
-  if (2.0 * k < 1.0) { return -1; }   // menor de 1 px: no se dibuja
+  if (2.0 * k < 1.0) { return o; }    // menor de 1 px: no se dibuja
   let m = u32(b.x);
   let nl = u32(g.misc.z);
   var l = 0u;
@@ -36,14 +46,23 @@ fn pick(i: u32) -> i32 {
     let c = nl - 1u - kk;
     if (lodinfo[m * 16u + 1u + c] * k <= g.misc.w) { l = c; break; }
   }
-  return i32(m * nl + l);
+  o.d0 = i32(m * nl + l);
+  if (l + 1u < nl) {
+    let ratio = lodinfo[m * 16u + 2u + l] * k / g.misc.w;   // error del nivel siguiente / tolerancia
+    if (ratio < FADE_W) {
+      o.t = u32(clamp((FADE_W - ratio) / (FADE_W - 1.0), 0.0, 1.0) * 127.0);
+      if (o.t > 0u) { o.d1 = o.d0 + 1; }
+    }
+  }
+  return o;
 }
 
 @compute @workgroup_size(64)
 fn count(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= u32(g.misc.x)) { return; }
-  let d = pick(id.x);
-  if (d >= 0) { atomicAdd(&args[u32(d) * 5u + 1u], 1u); }
+  let p = pick(id.x);
+  if (p.d0 >= 0) { atomicAdd(&args[u32(p.d0) * 5u + 1u], 1u); }
+  if (p.d1 >= 0) { atomicAdd(&args[u32(p.d1) * 5u + 1u], 1u); }
 }
 
 @compute @workgroup_size(1)
@@ -59,11 +78,18 @@ fn scan() {
 @compute @workgroup_size(64)
 fn scatter(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= u32(g.misc.x)) { return; }
-  let d = pick(id.x);
-  if (d < 0) { return; }
-  let off = atomicLoad(&args[u32(d) * 5u + 4u]);
-  let k = atomicAdd(&cur[u32(d)], 1u);
-  vis[off + k] = id.x;
+  let p = pick(id.x);
+  // vis = instancia | peso (7 bits) << 24 | rol (bit 31: 1 = copia gruesa)
+  if (p.d0 >= 0) {
+    let off = atomicLoad(&args[u32(p.d0) * 5u + 4u]);
+    let k = atomicAdd(&cur[u32(p.d0)], 1u);
+    vis[off + k] = id.x | (p.t << 24u);
+  }
+  if (p.d1 >= 0) {
+    let off = atomicLoad(&args[u32(p.d1) * 5u + 4u]);
+    let k = atomicAdd(&cur[u32(p.d1)], 1u);
+    vis[off + k] = id.x | (p.t << 24u) | 0x80000000u;
+  }
 }
 
 // ---- Render ----
@@ -80,6 +106,7 @@ struct VOut {
   @location(6) uv: vec2<f32>,
   @location(7) @interpolate(flat) layer: u32,
   @location(8) wpos: vec3<f32>,
+  @location(9) @interpolate(flat) fade: u32,   // peso (7 bits) y rol (bit 7) del fundido de LOD
 };
 
 @group(2) @binding(0) var tbase: texture_2d_array<f32>;
@@ -104,7 +131,8 @@ fn yaw(v: vec3<f32>, c: f32, s: f32) -> vec3<f32> {
 @vertex
 fn vs(@location(0) p: vec4<f32>, @location(1) e: vec2<f32>, @location(2) tg: vec2<f32>,
       @location(3) uv: vec2<f32>, @builtin(instance_index) ii: u32) -> VOut {
-  let i = visr[ii];
+  let raw = visr[ii];
+  let i = raw & 0x00FFFFFFu;
   let a = inst[2u * i];
   let b = inst[2u * i + 1u];
   let c = cos(b.y);
@@ -118,6 +146,7 @@ fn vs(@location(0) p: vec4<f32>, @location(1) e: vec2<f32>, @location(2) tg: vec
   o.uv = uv;
   o.layer = u32(b.x);
   o.wpos = w;
+  o.fade = (raw >> 24u) & 0xFFu;
   let m = b.x;
   let tint = select(0.8 + 0.4 * b.z, 0.96 + 0.08 * b.z, g.light.w > 0.5);
   // light.w = 1: estatuas de marmol; si no, paleta por modelo.
@@ -132,6 +161,13 @@ fn vs(@location(0) p: vec4<f32>, @location(1) e: vec2<f32>, @location(2) tg: vec
 
 @fragment
 fn fs(v: VOut) -> @location(0) vec4<f32> {
+  let ft = f32(v.fade & 0x7Fu) / 127.0;
+  if (ft > 0.0) {
+    // Ruido de gradiente entrelazado; la copia gruesa y la fina usan el mismo umbral (complementarias).
+    let nz = fract(52.9829189 * fract(dot(v.pos.xy, vec2<f32>(0.06711056, 0.00583715))));
+    let coarse = (v.fade & 0x80u) != 0u;
+    if (!select(nz >= ft, nz < ft, coarse)) { discard; }
+  }
   if (g.light.w > 1.5) {
     // Modo texturizado: base sRGB, mapa de normales y ORM; iluminacion en lineal y gamma al final.
     let albedo = textureSample(tbase, tsamp, v.uv, v.layer).rgb;

@@ -29,6 +29,7 @@ struct Ts {
 }
 
 #[wasm_bindgen]
+#[allow(dead_code)]
 pub struct Phoenix {
     surface: wgpu::Surface<'static>,
     cfg: wgpu::SurfaceConfiguration,
@@ -44,6 +45,8 @@ pub struct Phoenix {
     scatter_pl: wgpu::ComputePipeline,
     cull_bg: wgpu::BindGroup,
     draw_pl: wgpu::RenderPipeline,
+    /// Los draws indirectos no cambian entre frames: se graban una sola vez.
+    bundle: wgpu::RenderBundle,
     draw_bg: wgpu::BindGroup,
     vis_bg: wgpu::BindGroup,
     vbuf: wgpu::Buffer,
@@ -311,7 +314,7 @@ pub async fn create(
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
     });
     let vis = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None, size: count as u64 * 4, mapped_at_creation: false,
+        label: None, size: count as u64 * 8, mapped_at_creation: false, // hasta 2 copias por instancia (fundido de LOD)
         usage: wgpu::BufferUsages::STORAGE,
     });
 
@@ -513,9 +516,30 @@ pub async fn create(
         period: queue.get_timestamp_period(),
     });
     let depth = depth_view(&device, w, h);
+    let bundle = {
+        let mut b = device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+            label: None,
+            color_formats: &[Some(cfg.format)],
+            depth_stencil: Some(wgpu::RenderBundleDepthStencil {
+                format: DEPTH, depth_read_only: false, stencil_read_only: true,
+            }),
+            sample_count: 1,
+            multiview: None,
+        });
+        b.set_pipeline(&draw_pl);
+        b.set_bind_group(0, &draw_bg, &[]);
+        b.set_bind_group(1, &vis_bg, &[]);
+        b.set_bind_group(2, &tex_bg, &[]);
+        b.set_vertex_buffer(0, vbuf.slice(..));
+        b.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+        for d in 0..(models * lods) as u64 {
+            b.draw_indexed_indirect(&args, d * 20);
+        }
+        b.finish(&wgpu::RenderBundleDescriptor { label: None })
+    };
     Ok(Phoenix {
         surface, cfg, device, queue, depth, globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
-        cull_bg, draw_pl, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
+        cull_bg, draw_pl, bundle, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
         frame: 0, tau: 1.0, spacing, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
         tris: Rc::new(tris), full: Rc::new(full),
     })
@@ -584,20 +608,21 @@ impl Phoenix {
         let mut enc = self.device.create_command_encoder(&Default::default());
         let groups = self.n.div_ceil(64);
         let tw = |i: u32| self.ts.as_ref().map(|t| (&t.qs, i));
-        for (k, pl) in [&self.count_pl, &self.scan_pl, &self.scatter_pl].into_iter().enumerate() {
+        {
+            // Una sola pasada con los tres dispatches (WebGPU los ordena dentro de la pasada).
             let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
-                timestamp_writes: tw(if k == 0 { 0 } else { 1 })
-                    .filter(|_| k != 1)
-                    .map(|(qs, i)| wgpu::ComputePassTimestampWrites {
-                        query_set: qs,
-                        beginning_of_pass_write_index: if k == 0 { Some(i) } else { None },
-                        end_of_pass_write_index: if k == 2 { Some(i) } else { None },
-                    }),
+                timestamp_writes: tw(0).map(|(qs, _)| wgpu::ComputePassTimestampWrites {
+                    query_set: qs,
+                    beginning_of_pass_write_index: Some(0),
+                    end_of_pass_write_index: Some(1),
+                }),
             });
-            p.set_pipeline(pl);
             p.set_bind_group(0, &self.cull_bg, &[]);
-            p.dispatch_workgroups(if k == 1 { 1 } else { groups }, 1, 1);
+            for (k, pl) in [&self.count_pl, &self.scan_pl, &self.scatter_pl].into_iter().enumerate() {
+                p.set_pipeline(pl);
+                p.dispatch_workgroups(if k == 1 { 1 } else { groups }, 1, 1);
+            }
         }
         {
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -632,17 +657,9 @@ impl Phoenix {
                 p.set_bind_group(3, &self.gnd_bg, &[]);
                 p.draw(0..6, 0..1);
             }
-            p.set_pipeline(&self.draw_pl);
-            p.set_bind_group(0, &self.draw_bg, &[]);
-            p.set_bind_group(1, &self.vis_bg, &[]);
-            p.set_bind_group(2, &self.tex_bg, &[]);
-            p.set_vertex_buffer(0, self.vbuf.slice(..));
-            p.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            for d in 0..(self.models * self.lods) as u64 {
-                p.draw_indexed_indirect(&self.args, d * 20);
-            }
+            p.execute_bundles([&self.bundle]);
         }
-        let read = self.frame % 20 == 0 && !self.busy.get();
+        let read = self.frame % 45 == 0 && !self.busy.get();
         let nd = (self.models * self.lods) as usize;
         let ts_off = ((nd * 20 + 63) / 64 * 64) as u64;
         if read {
