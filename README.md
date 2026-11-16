@@ -22,6 +22,7 @@ Pensado primero para el juego Backrooms, pero sin depender de él. Alojable como
 | [docs/LUX.md](docs/LUX.md) | La librería de iluminación y cómo integrarla |
 | [docs/ASSETS.md](docs/ASSETS.md) | `phoenix-bake`, formato del paquete, piezas modulares |
 | [docs/RENDIMIENTO.md](docs/RENDIMIENTO.md) | Mediciones y mejoras |
+| [docs/INTEGRACION.md](docs/INTEGRACION.md) | Qué usa Backrooms de three.js y cómo se reparte con Phoenix |
 | [docs/IA.md](docs/IA.md) | `phoenix-ai`: base de IA (RNG, navegación, percepción) |
 | [docs/LIMITACIONES.md](docs/LIMITACIONES.md) | Lo que no hace y lo pendiente |
 
