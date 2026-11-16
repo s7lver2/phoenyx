@@ -78,6 +78,8 @@ pub struct Phoenix {
     nlights: u32,
     sun: [f32; 4],
     sh_on: bool,
+    sun_dir: Vec3,
+    exposure: f32,
     /// Los draws indirectos no cambian entre frames: se graban una sola vez.
     bundle: wgpu::RenderBundle,
     draw_bg: wgpu::BindGroup,
@@ -696,7 +698,8 @@ pub async fn create(
     Ok(Phoenix {
         surface, cfg, device, queue, depth, globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
         cull_bg, draw_pl, bundle, cluster_pl, lights_buf, sh_buf, sviews, nlights: 0,
-        sun: [2.4, 2.2, 1.92, 0.9], sh_on: true, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
+        sun: [2.4, 2.2, 1.92, 0.9], sh_on: true,
+        sun_dir: Vec3::new(-0.7, 0.55, -0.25).normalize(), exposure: 1.0, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
         frame: 0, tau: 1.0, spacing, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
         tris: Rc::new(tris), full: Rc::new(full),
     })
@@ -738,6 +741,17 @@ impl Phoenix {
         self.sun = [r, g, b, ambient];
     }
 
+    /// Direccion del sol: azimut y elevacion en radianes (elevacion maxima 88 grados).
+    pub fn set_sun_dir(&mut self, az: f32, el: f32) {
+        let el = el.clamp(-0.5, 1.53);
+        self.sun_dir = Vec3::new(el.cos() * az.sin(), el.sin(), -el.cos() * az.cos()).normalize();
+    }
+
+    /// Exposicion del mapeo de tonos.
+    pub fn set_exposure(&mut self, e: f32) {
+        self.exposure = e;
+    }
+
     /// Activa o desactiva las sombras del sol (2 cascadas).
     pub fn set_shadows(&mut self, on: bool) {
         self.sh_on = on;
@@ -771,7 +785,7 @@ impl Phoenix {
             planes,
             misc: [self.n as f32, self.models as f32, self.lods as f32, self.tau],
             light: if self.flat {
-                let l = Vec3::new(-0.7, 0.55, -0.25).normalize();
+                let l = self.sun_dir;
                 [l.x, l.y, l.z, if self.textured { 2.0 } else { 1.0 }]
             } else {
                 [0.5, 0.8, 0.3, 0.0]
@@ -781,11 +795,12 @@ impl Phoenix {
             vw: [0.0, 0.0, 0.0, self.nlights as f32],
         };
         // Cascadas de sombras del sol: cajas ortograficas alineadas a la luz, ajustadas al texel.
-        let shadows = self.flat && self.textured && self.sh_on;
+        let shadows = self.flat && self.textured && self.sh_on && self.sun_dir.y > 0.03;
         let mut shu = ShU::zeroed();
         shu.sun = self.sun;
+        shu.texel[3] = self.exposure;
         if shadows {
-            let sun_l = Vec3::new(-0.7, 0.55, -0.25).normalize();
+            let sun_l = self.sun_dir;
             let lview = Mat4::look_to_rh(Vec3::ZERO, -sun_l, Vec3::Y);
             for (i, rr) in CASCADES.into_iter().enumerate() {
                 let c = lview.transform_point3(eye + dir * rr * 0.5);

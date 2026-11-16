@@ -9,10 +9,20 @@ canvas{width:100vw;height:100vh;display:block}
 #cap{position:fixed;right:6vw;bottom:14vh;font:600 clamp(18px,2.6vw,38px)/1.2 "IBM Plex Sans",system-ui,sans-serif;color:#e9e27a;
   background:rgba(20,20,12,.55);padding:.25em .6em;opacity:0;transition:opacity .8s;text-shadow:0 1px 2px #000;pointer-events:none}
 #cap small{display:block;font-weight:400;font-size:.5em;color:#f3efc9;margin-top:.2em}
+#ui{position:fixed;right:10px;top:10px;width:250px;color:#f1e7b8;font:11px/1.4 monospace;background:rgba(14,13,9,.78);padding:8px 10px;border:1px solid #4a4528;max-height:calc(100vh - 20px);overflow:auto}
+#ui h4{margin:0 0 6px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#e9e27a;cursor:pointer}
+#ui label{display:grid;grid-template-columns:96px 1fr 38px;gap:6px;align-items:center;margin:3px 0}
+#ui label.chk{grid-template-columns:auto 1fr}
+#ui output{text-align:right;color:#bfb57a}
+#ui input[type=range]{width:100%;accent-color:#e9e27a}
+#ui .row{display:flex;gap:4px;margin:6px 0}
+#ui button{flex:1;background:#26230f;color:#f1e7b8;border:1px solid #4a4528;font:11px monospace;padding:3px 2px;cursor:pointer}
+#ui button:hover{background:#3a3516}
+#ui.min>*:not(h4){display:none}
 #load{position:fixed;inset:0;display:grid;place-items:center;color:#f1e7b8;font:14px monospace;background:#000}
 </style>
-<canvas id="c"></canvas><div id="hud"></div><div id="cap"></div><div id="load">cargando…</div>
-<div id="help">F: vuelo libre (clic = capturar raton, WASD, Espacio/Ctrl, Mayus rapido) · H: estadisticas · R: reiniciar secuencia</div>
+<canvas id="c"></canvas><div id="hud"></div><div id="ui"></div><div id="cap"></div><div id="load">cargando…</div>
+<div id="help">F: vuelo libre (clic = capturar raton, WASD, Espacio/Ctrl, Mayus rapido) · H: estadisticas · R: reiniciar secuencia · L: panel de luz</div>
 <script type="module">
 import init, { create } from "./pkg/phoenix.js";
 const hud = document.getElementById("hud"), cap = document.getElementById("cap"), load = document.getElementById("load");
@@ -39,18 +49,80 @@ const fit = () => { c.width = innerWidth * dpr; c.height = innerHeight * dpr; };
 fit();
 load.textContent = "creando escena…";
 const p = await create(c, verts, idx, new Float32Array(meta.info), new Uint32Array(meta.draws.flat()), meta.models, meta.lods, N + EXTRA, cine, tex.size, tex.mips, tex.layers, tb, tn, to, gr.size, gr.mips, gb, gn);
-p.set_tolerance(+(q.get("tau") || 1));
 window.__p = p;
-if (q.get("shadows") === "0") p.set_shadows(false);
 // Luces puntuales (culling por clusters en GPU): brasas junto a la estatua heroe y farolillos por el pasillo.
+const baseLights = [];
 {
   const L = [];
   for (const [x, y, z] of [[-3.5, 1.2, -3.5], [3.8, 1.0, -2.5], [0, 1.0, 4]]) L.push(x, y, z, 9, 1.0, 0.55, 0.25, 18);
   for (let z = -120; z > -900; z -= 45) L.push(0, 1.5, z, 14, 1.0, 0.6, 0.3, 14);
-  p.set_lights(new Float32Array(L));
+  baseLights.push(...L);
 }
 addEventListener("resize", () => { fit(); p.resize(c.width, c.height); });
 load.style.display = "none";
+
+// ---- Panel de iluminacion ----
+const S = { el: 37.7, az: 289.7, sun: 1, amb: 1, exp: 1, pl: 1, tau: +(q.get("tau") || 1), shadows: q.get("shadows") !== "0", lights: true, pause: false };
+let tSeq = 0;
+const sm = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+const mixc = (a, b, k) => a.map((v, i) => v + (b[i] - v) * k);
+const applyLight = () => {
+  const el = S.el * Math.PI / 180, se = Math.sin(el);
+  p.set_sun_dir(S.az * Math.PI / 180, el);
+  // Color y radiancia del sol: se enrojece y se atenua cerca del horizonte (extincion atmosferica).
+  const c = mixc([1, 0.45, 0.2], [1, 0.93, 0.82], Math.min(1, Math.max(0, se * 3)));
+  const k = 2.4 * S.sun * sm(-0.05, 0.12, se) * (0.4 + 0.6 * Math.min(1, Math.max(0, se * 2)));
+  p.set_sun(c[0] * k, c[1] * k, c[2] * k, 0.9 * S.amb);
+  p.set_exposure(S.exp);
+  p.set_shadows(S.shadows);
+  p.set_tolerance(S.tau);
+  const L = S.lights ? baseLights.map((v, i) => (i % 8 === 7 ? v * S.pl : v)) : [];
+  p.set_lights(new Float32Array(L));
+};
+const ui = document.getElementById("ui");
+ui.innerHTML = '<h4>Iluminación · L</h4>';
+const sliders = [
+  ["el", "Elevación sol", -15, 88, 0.5, "°"], ["az", "Azimut sol", 0, 360, 1, "°"], ["sun", "Intensidad sol", 0, 4, 0.05, ""],
+  ["amb", "Ambiente", 0, 3, 0.05, ""], ["exp", "Exposición", 0.2, 4, 0.05, ""], ["pl", "Luces puntuales", 0, 6, 0.1, ""],
+  ["tau", "Tolerancia LOD", 0.4, 3, 0.1, "px"],
+];
+const outs = {}, ins = {};
+const fmtv = (v, st, u) => (+v).toFixed(st < 1 ? 1 : 0) + u;
+const showVals = () => { for (const [key, , , , st, u] of sliders) { ins[key].value = S[key]; outs[key].textContent = fmtv(S[key], st, u); } };
+for (const [key, name, mn, mx, st, u] of sliders) {
+  const l = document.createElement("label");
+  l.innerHTML = `${name}<input type="range" min="${mn}" max="${mx}" step="${st}"><output></output>`;
+  const r = l.querySelector("input"), o = l.querySelector("output");
+  outs[key] = o; ins[key] = r;
+  r.oninput = () => { S[key] = +r.value; o.textContent = fmtv(r.value, st, u); applyLight(); };
+  ui.appendChild(l);
+}
+const chk = (key, name) => {
+  const l = document.createElement("label"); l.className = "chk";
+  l.innerHTML = `<input type="checkbox">${name}`;
+  const r = l.querySelector("input"); r.checked = S[key]; ins[key] = r;
+  r.onchange = () => { S[key] = r.checked; applyLight(); };
+  ui.appendChild(l);
+};
+chk("shadows", "Sombras del sol"); chk("lights", "Luces puntuales");
+const tl = document.createElement("label");
+tl.innerHTML = 'Secuencia<input type="range" min="0" max="56" step="0.1"><output></output>';
+const tr = tl.querySelector("input"), to2 = tl.querySelector("output");
+ui.appendChild(tl);
+chk("pause", "Pausar secuencia");
+tr.oninput = () => { S.pause = true; ins.pause.checked = true; tSeq = +tr.value; };
+const PRESETS = { "Amanecer": { el: 7, az: 95, exp: 1.1 }, "Mediodía": { el: 62, az: 200, exp: 1 },
+  "Atardecer": { el: 4, az: 268, sun: 1.2, exp: 1.2 }, "Noche": { el: -12, az: 268, exp: 2.0, pl: 1.2 } };
+const row = document.createElement("div"); row.className = "row";
+for (const [name, v] of Object.entries(PRESETS)) {
+  const b = document.createElement("button"); b.textContent = name;
+  b.onclick = () => { Object.assign(S, { sun: 1, amb: 1, exp: 1, pl: 1 }, v); showVals(); applyLight(); };
+  row.appendChild(b);
+}
+ui.insertBefore(row, ui.children[1]);
+ui.querySelector("h4").onclick = () => ui.classList.toggle("min");
+showVals();
+applyLight();
 
 // ---- Camara ----
 const ext = p.extent();
@@ -60,7 +132,8 @@ addEventListener("keydown", (e) => {
   keys[e.code] = true;
   if (e.code === "KeyF") { cam.free = !cam.free; if (!cam.free) document.exitPointerLock(); }
   if (e.code === "KeyH") hud.style.display = hud.style.display === "block" ? "none" : "block";
-  if (e.code === "KeyR") t0 = performance.now();
+  if (e.code === "KeyR") tSeq = 0;
+  if (e.code === "KeyL") ui.classList.toggle("min");
 });
 addEventListener("keyup", (e) => { keys[e.code] = false; });
 c.addEventListener("click", () => { if (cam.free) c.requestPointerLock(); });
@@ -98,7 +171,10 @@ let lastCap = null;
 let last = performance.now(), t0 = last, ms = 16, cpu = 0, f = 0, s = [0, 0, 0, 0, 0, 0], path0 = 0;
 const loop = (now) => {
   const dt = Math.min((now - last) / 1000, 0.1);
-  const t = ((now - t0) / 1000) % SEQ;
+  if (!S.pause) tSeq += dt;
+  const t = tSeq % SEQ;
+  if (!S.pause) tr.value = t;
+  to2.textContent = t.toFixed(0) + " s";
   if (cam.free) {
     const sp = (keys.ShiftLeft ? 120 : 25) * dt;
     const fx = Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);

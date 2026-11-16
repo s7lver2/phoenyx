@@ -198,7 +198,13 @@ fn lit_surface(wpos: vec3<f32>, n: vec3<f32>, view: vec3<f32>, alb: vec3<f32>, r
   let rough = clamp(rough_in, 0.06, 1.0);
   let f0 = mix(vec3<f32>(0.04), alb, metal);
   var col = brdf(g.light.xyz, sh.sun.rgb, n, view, alb, rough, metal, f0) * shadow_at(wpos, n, depth);
-  let amb = mix(vec3<f32>(0.30, 0.24, 0.17), vec3<f32>(0.42, 0.52, 0.72), n.y * 0.5 + 0.5) * sh.sun.w;
+  // Ambiente segun la hora: cielo azul de dia, tenue de noche y relleno calido del horizonte al atardecer.
+  let se = g.light.y;
+  let dk = day_k(se);
+  let glow = horizon_col(se) * 0.5 * exp(-abs(se) * 7.0) * day_k(se + 0.1);
+  let up = mix(vec3<f32>(0.02, 0.03, 0.07), vec3<f32>(0.42, 0.52, 0.72), dk) + glow;
+  let dn = mix(vec3<f32>(0.01, 0.01, 0.015), vec3<f32>(0.30, 0.24, 0.17), dk) + glow * 0.6;
+  let amb = mix(dn, up, n.y * 0.5 + 0.5) * sh.sun.w;
   col += alb * (1.0 - metal) * amb * ao;
   // Luces puntuales: solo las del cluster del fragmento.
   let cx = min(u32(frag.x / g.grid.x * f32(CX)), CX - 1u);
@@ -220,6 +226,18 @@ fn lit_surface(wpos: vec3<f32>, n: vec3<f32>, view: vec3<f32>, alb: vec3<f32>, r
     col += brdf(d / dist, c.rgb * (win * win / (d2 + 0.5)), n, view, alb, rough, metal, f0);
   }
   return col;
+}
+
+fn aces(x: vec3<f32>) -> vec3<f32> {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Dia/noche segun la elevacion del sol (se = sin elevacion) y color del horizonte (niebla y cielo).
+fn day_k(se: f32) -> f32 { return smoothstep(-0.14, 0.22, se); }
+fn horizon_col(se: f32) -> vec3<f32> {
+  let base = mix(vec3<f32>(0.022, 0.028, 0.055), vec3<f32>(0.80, 0.77, 0.71), day_k(se));
+  let warm = exp(-abs(se) * 7.0) * day_k(se + 0.1);
+  return mix(base, vec3<f32>(1.0, 0.55, 0.28), clamp(warm * 0.7, 0.0, 0.7));
 }
 
 // ---- Sombras: solo posicion ----
@@ -324,9 +342,9 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {
     let dust = vec3<f32>(0.40, 0.27, 0.15) * (1.0 - smoothstep(0.0, 0.45, v.wpos.y));
     let alb2 = mix(albedo, dust, 0.45 * (1.0 - smoothstep(0.0, 0.5, v.wpos.y)));
     var lit = lit_surface(v.wpos, nn, view, alb2, orm.g, orm.b, orm.r * mix(0.55, 1.0, gy), v.pos.xy, 1.0 / v.pos.w);
-    lit = vec3<f32>(1.0) - exp(-lit * 1.15);
+    lit = aces(lit * sh.texel.w);
     let fogt = clamp(v.dist / 2500.0, 0.0, 1.0);
-    let hazel = pow(vec3<f32>(0.80, 0.77, 0.71), vec3<f32>(2.2));
+    let hazel = pow(horizon_col(g.light.y), vec3<f32>(2.2));
     let outl = mix(lit, hazel, fogt * fogt);
     return vec4<f32>(pow(outl, vec3<f32>(1.0 / 2.2)), 1.0);
   }
@@ -394,8 +412,8 @@ fn fs_ground(v: GOut) -> @location(0) vec4<f32> {
     let nn = normalize(vec3<f32>(nm.x, nm.z, -nm.y));
     let view = normalize(g.cam.xyz - v.w);
     var lit = lit_surface(v.w, nn, view, alb, 0.9, 0.0, 1.0, v.pos.xy, 1.0 / v.pos.w);
-    lit = vec3<f32>(1.0) - exp(-lit * 1.15);
-    let hazel = pow(vec3<f32>(0.80, 0.77, 0.71), vec3<f32>(2.2));
+    lit = aces(lit * sh.texel.w);
+    let hazel = pow(horizon_col(g.light.y), vec3<f32>(2.2));
     return vec4<f32>(pow(mix(lit, hazel, fog * fog), vec3<f32>(1.0 / 2.2)), 1.0);
   }
   // Sin texturas: tierra procedural.
@@ -438,12 +456,23 @@ fn fs_sky(v: SOut) -> @location(0) vec4<f32> {
   let dir = normalize(w4.xyz / w4.w - g.cam.xyz);
   let sun = g.light.xyz;
   let sd = max(dot(dir, sun), 0.0);
-  let haze = vec3<f32>(0.80, 0.77, 0.71);
-  // Dispersion de Rayleigh aproximada: azul profundo arriba, horizonte palido y calido hacia el sol.
+  let se = sun.y;
+  let day = day_k(se);
+  let haze = horizon_col(se);
+  // Dispersion de Rayleigh aproximada: cenit segun la hora, horizonte calido hacia el sol.
   let el = clamp(dir.y, 0.0, 1.0);
-  var col = mix(haze, vec3<f32>(0.14, 0.32, 0.72), pow(el, 0.5));
-  col = mix(col, vec3<f32>(1.0, 0.82, 0.58), pow(sd, 6.0) * (1.0 - el) * 0.55);
-  col += vec3<f32>(1.0, 0.88, 0.65) * (pow(sd, 900.0) * 6.0 + pow(sd, 48.0) * 0.45);
+  let zen = mix(vec3<f32>(0.004, 0.008, 0.03), vec3<f32>(0.14, 0.32, 0.72), day);
+  var col = mix(haze, zen, pow(el, 0.5));
+  let warm = exp(-abs(se) * 7.0) * day_k(se + 0.1);
+  let suncol = mix(vec3<f32>(1.0, 0.45, 0.2), vec3<f32>(1.0, 0.88, 0.65), clamp(se * 3.0, 0.0, 1.0));
+  col = mix(col, suncol, pow(sd, 6.0) * (1.0 - el) * 0.55 * day_k(se + 0.1));
+  col += suncol * (pow(sd, 900.0) * 6.0 + pow(sd, 48.0) * 0.45) * smoothstep(-0.06, 0.02, se);
+  // Estrellas de noche.
+  if (dir.y > 0.0 && day < 0.7) {
+    let cell = floor(dir * 260.0);
+    let hh = fract(sin(dot(cell, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453);
+    col += vec3<f32>(0.9, 0.95, 1.0) * step(0.9975, hh) * (hh - 0.9975) * 400.0 * (1.0 - day / 0.7) * smoothstep(0.0, 0.12, dir.y);
+  }
   // Nubes: capa plana a 1800 m con fbm, iluminadas desde el sol.
   if (dir.y > 0.012) {
     let tcl = 1800.0 / dir.y;
@@ -451,7 +480,8 @@ fn fs_sky(v: SOut) -> @location(0) vec4<f32> {
     let dens = smoothstep(0.50, 0.78, fbm2(cp + vec2<f32>(3.7, 1.3)));
     let edge = smoothstep(0.50, 0.78, fbm2(cp + vec2<f32>(3.7, 1.3) + sun.xz * 0.06));
     let shade = clamp(1.0 - (edge - dens) * 2.2, 0.35, 1.0);
-    let ccol = mix(vec3<f32>(0.62, 0.64, 0.70), vec3<f32>(1.0, 0.97, 0.92), shade);
+    var ccol = mix(vec3<f32>(0.62, 0.64, 0.70), vec3<f32>(1.0, 0.97, 0.92), shade);
+    ccol = mix(ccol, suncol, warm * 0.6) * mix(0.06, 1.0, day);
     col = mix(col, ccol, dens * smoothstep(0.012, 0.12, dir.y) * 0.92);
   }
   // Montanas lejanas en dos capas con perspectiva aerea.
@@ -460,7 +490,8 @@ fn fs_sky(v: SOut) -> @location(0) vec4<f32> {
   let h2 = 0.028 + 0.025 * sin(az * 5.0 + 2.5) + 0.012 * sin(az * 11.0 + 0.5) + 0.006 * sin(az * 29.0);
   let m1 = smoothstep(h1, h1 - 0.004, dir.y);
   let m2 = smoothstep(h2, h2 - 0.003, dir.y);
-  col = mix(col, mix(haze, vec3<f32>(0.62, 0.58, 0.54), 0.5), m1);
-  col = mix(col, mix(haze, vec3<f32>(0.50, 0.45, 0.40), 0.55), m2);
+  let mk = mix(0.12, 1.0, day);
+  col = mix(col, mix(haze, vec3<f32>(0.62, 0.58, 0.54) * mk, 0.5), m1);
+  col = mix(col, mix(haze, vec3<f32>(0.50, 0.45, 0.40) * mk, 0.55), m2);
   return vec4<f32>(col, 1.0);
 }
