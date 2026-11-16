@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Phoenix M0</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{width:100vw;height:100vh;display:block}
+#hud{position:fixed;left:8px;top:8px;color:#e8d98a;font:12px monospace;white-space:pre;text-shadow:0 0 2px #000}</style>
+<canvas id="c"></canvas><div id="hud">cargando…</div>
+<script type="module">
+import init, { create } from "./pkg/phoenix.js";
+const q = new URLSearchParams(location.search);
+const N = +(q.get("n") || 100000);
+const hud0=document.getElementById("hud");
+window.onunhandledrejection=e=>{hud0.textContent="ERROR "+(e.reason&&e.reason.message||e.reason)};
+await init();
+const c = document.getElementById("c"), dpr = Math.min(devicePixelRatio, 2);
+const fit = () => { c.width = innerWidth * dpr; c.height = innerHeight * dpr; };
+fit();
+hud0.textContent="init ok, creando…";
+const p = await create(c, N);
+hud0.textContent="creado";
+addEventListener("resize", () => { fit(); p.resize(c.width, c.height); });
+let last = performance.now(), ms = 0, cpu = 0, f = 0;
+const hud = document.getElementById("hud");
+const loop = (t) => {
+  const a = performance.now();
+  p.frame(t / 1000);
+  cpu = cpu * 0.95 + (performance.now() - a) * 0.05;
+  ms = ms * 0.95 + (t - last) * 0.05; last = t;
+  if (++f % 20 === 0) {
+    const k = p.counts();
+    hud.textContent = `instancias ${N}\nframe ${ms.toFixed(2)} ms (${(1000/ms).toFixed(0)} fps)\ncpu submit ${cpu.toFixed(3)} ms\nvisibles LOD0/1/2 ${k.join(" / ")}\ntriangulos ${(p.triangles()/1e6).toFixed(2)} M\ndraws 3`;
+    window.__stats = { ms, cpu, counts: Array.from(k), tris: p.triangles() };
+  }
+  requestAnimationFrame(loop);
+};
+requestAnimationFrame(loop);
+</script>
