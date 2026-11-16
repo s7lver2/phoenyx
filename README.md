@@ -10,6 +10,7 @@ Pensado primero para el juego Backrooms, pero sin depender de él. Alojable como
 - **`lux`** (`crates/lux`): iluminación independiente. PBR GGX, sol con sombras en 2 cascadas, luna, hasta 512 luces (puntuales, focos, tubos fluorescentes) con clustering en compute y 4 focos con sombra.
 - **Post-proceso:** buffer HDR, AO en pantalla, bloom, ACES.
 - **`phoenix-bake`:** CLI que convierte GLB en paquetes con 10 niveles de LOD y texturas PBR.
+- **`phoenix-ai`** (`crates/phoenix-ai`): base de IA con RNG determinista, rejilla de navegación (BFS, A*, visión) y percepción; los algoritmos de comportamiento los pone el juego.
 - **`web/phoenix.js`:** envoltorio JS (soporte, carga, creación, luces, vigilancia de GPU).
 
 ## Documentación
@@ -21,6 +22,7 @@ Pensado primero para el juego Backrooms, pero sin depender de él. Alojable como
 | [docs/LUX.md](docs/LUX.md) | La librería de iluminación y cómo integrarla |
 | [docs/ASSETS.md](docs/ASSETS.md) | `phoenix-bake`, formato del paquete, piezas modulares |
 | [docs/RENDIMIENTO.md](docs/RENDIMIENTO.md) | Mediciones y mejoras |
+| [docs/IA.md](docs/IA.md) | `phoenix-ai`: base de IA (RNG, navegación, percepción) |
 | [docs/LIMITACIONES.md](docs/LIMITACIONES.md) | Lo que no hace y lo pendiente |
 
 ## Compilar y ejecutar

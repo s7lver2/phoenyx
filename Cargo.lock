@@ -534,6 +534,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoenix-ai"
+version = "0.0.1"
+dependencies = [
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "phoenix-bake"
 version = "0.0.1"
 dependencies = [

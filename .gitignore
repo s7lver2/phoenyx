@@ -3,3 +3,4 @@ pkg/
 web/assets/
 web/assets-*/
 assets-src/
+web/pkg-ai/
