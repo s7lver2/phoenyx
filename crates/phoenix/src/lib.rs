@@ -10,7 +10,6 @@ use wgpu::util::DeviceExt;
 
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const FOV: f32 = 1.1;
-const SPACING: f32 = 4.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -20,6 +19,7 @@ struct Globals {
     planes: [[f32; 4]; 6],
     misc: [f32; 4],
     light: [f32; 4],
+    inv_vp: [f32; 16],
 }
 
 struct Ts {
@@ -55,6 +55,14 @@ pub struct Phoenix {
     models: u32,
     lods: u32,
     frame: u64,
+    tau: f32,
+    spacing: f32,
+    flat: bool,
+    textured: bool,
+    tex_bg: wgpu::BindGroup,
+    gnd_bg: wgpu::BindGroup,
+    ground_pl: wgpu::RenderPipeline,
+    sky_pl: wgpu::RenderPipeline,
     busy: Rc<Cell<bool>>,
     // [visibles, tris dibujados, tris a resolucion completa, draws no vacios, cull ms, render ms]
     stats: Rc<Cell<[f64; 6]>>,
@@ -92,6 +100,46 @@ fn err<E: std::fmt::Display>(e: E) -> JsValue {
 
 /// `draws`: [index_count, first_index, base_vertex] por (modelo, lod), modelo-major.
 /// `info`: 8 floats por modelo (radio, error de cada LOD).
+/// Textura 2D en array con su cadena de mips (capas una tras otra, cada una con todos sus mips).
+fn make_tex(
+    device: &wgpu::Device, queue: &wgpu::Queue, size: u32, mips: u32, layers: u32,
+    fmt: wgpu::TextureFormat, data: &[u8],
+) -> wgpu::TextureView {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: layers },
+        mip_level_count: mips,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: fmt,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut off = 0usize;
+    for layer in 0..layers {
+        let mut s = size;
+        for mip in 0..mips {
+            let bytes = (s * s * 4) as usize;
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex, mip_level: mip,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data[off..off + bytes],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(s * 4), rows_per_image: Some(s) },
+                wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 1 },
+            );
+            off += bytes;
+            s = (s / 2).max(1);
+        }
+    }
+    tex.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    })
+}
+
 #[wasm_bindgen]
 pub async fn create(
     canvas: web_sys::HtmlCanvasElement,
@@ -102,6 +150,17 @@ pub async fn create(
     models: u32,
     lods: u32,
     count: u32,
+    flat: bool,
+    tex_size: u32,
+    tex_mips: u32,
+    tex_layers: u32,
+    tex_base: &[u8],
+    tex_norm: &[u8],
+    tex_orm: &[u8],
+    ground_size: u32,
+    ground_mips: u32,
+    ground_base: &[u8],
+    ground_norm: &[u8],
 ) -> Result<Phoenix, JsValue> {
     console_error_panic_hook::set_once();
     let (w, h) = (canvas.width().max(1), canvas.height().max(1));
@@ -147,19 +206,77 @@ pub async fn create(
         label: None, contents: bytemuck::cast_slice(info), usage: wgpu::BufferUsages::STORAGE,
     });
 
-    // Instancias: rejilla con relieve suave, modelo y yaw pseudoaleatorios.
+    // Instancias en rejilla: colinas con rocas, o plano con estatuas apoyadas en el suelo.
+    let spacing = if flat { 3.2 } else { 4.0 };
     let side = (count as f32).sqrt().ceil() as u32;
     let mut insts: Vec<[f32; 4]> = Vec::with_capacity(count as usize * 2);
-    let hs = |i: u32, k: u32| ((i.wrapping_mul(2654435761).wrapping_add(k.wrapping_mul(40503)) >> 7) & 0xffff) as f32 / 65535.0;
+    let hs = |i: u32, k: u32| {
+        // Hash con buen mezclado: sin correlacion entre canales k.
+        let mut h = i.wrapping_mul(0x9E3779B1) ^ k.wrapping_mul(0x85EBCA6B);
+        h ^= h >> 16;
+        h = h.wrapping_mul(0x7FEB352D);
+        h ^= h >> 15;
+        h = h.wrapping_mul(0x846CA68B);
+        h ^= h >> 16;
+        (h & 0xffffff) as f32 / 16777215.0
+    };
+    // Escena cinematografica: estatua heroe en el origen, rocas, y un ejercito de estatuas en
+    // bloques de 8 columnas separados por pasillos (un pasillo en x = 0).
+    let rocks = if flat { 60000u32.min(count / 4) } else { 0 };
+    let ns = count - rocks;
+    let off = |m: usize| info[m * 16 + 13];
+    let hgt = |m: usize| info[m * 16 + 14];
+    let s_statue = 4.6 / hgt(0);
+    let (nb, cols) = (60u32, 480u32);
     for i in 0..count {
-        let (gx, gz) = ((i % side) as f32 * SPACING, (i / side) as f32 * SPACING);
-        let (x, z) = (gx + (hs(i, 1) - 0.5) * 3.0, gz + (hs(i, 2) - 0.5) * 3.0);
-        let s = 0.8 + hs(i, 3) * hs(i, 3) * 3.0;
-        let ground = 14.0 * (x * 0.006).sin() * (z * 0.008).cos() + 5.0 * (x * 0.02 + z * 0.015).sin();
-        insts.push([x, ground + s * 0.5, z, s]);
+        if flat {
+            let (a, b) = if i == 0 {
+                ([0.0, s_statue * off(0), 0.0, s_statue], [0.0, 0.0, 0.5, 0.0])
+            } else if i >= ns {
+                let r = i - ns;
+                let (x, z, s) = if r < 40 {
+                    // Rocas grandes detras de la estatua heroe.
+                    ((hs(i, 1) - 0.5) * 70.0, 12.0 + hs(i, 2) * 38.0, 2.5 + hs(i, 3) * 3.5)
+                } else if r < 3000 {
+                    // Escombros alrededor de la estatua: muchos pequenos, pocos grandes.
+                    let (an, rad) = (hs(i, 1) * 6.2832, 4.0 + hs(i, 2) * 55.0);
+                    let q = hs(i, 3);
+                    (an.cos() * rad, an.sin() * rad, 0.12 + q * q * q * 2.6)
+                } else if r < 32000 {
+                    // Guijarros en el pasillo central.
+                    ((hs(i, 1) - 0.5) * 6.5, -70.0 - hs(i, 2) * 900.0, 0.07 + hs(i, 3) * hs(i, 3) * 0.3)
+                } else {
+                    ((hs(i, 1) - 0.5) * 1500.0, -80.0 - hs(i, 2) * 4000.0, 0.3 + hs(i, 3) * hs(i, 3) * 3.0)
+                };
+                let mi = 1 + (i as usize % (models as usize - 1));
+                ([x, s * (off(mi) - 0.22), z, s], [mi as f32, hs(i, 4) * 6.2832, hs(i, 5), 0.0])
+            } else {
+                let k = i - 1;
+                let (c, r) = (k % cols, k / cols);
+                let (bl, kk) = (c / 8, c % 8);
+                let center = (bl as f32 - nb as f32 / 2.0 + 0.5) * 23.6;
+                let x = center + (kk as f32 - 3.5) * 2.2;
+                let s = s_statue * (0.98 + hs(i, 3) * 0.04);
+                ([x, s * off(0), -80.0 - r as f32 * 3.6, s], [0.0, (hs(i, 4) - 0.5) * 0.15, hs(i, 5), 0.0])
+            };
+            insts.push(a);
+            insts.push(b);
+            continue;
+        }
+        let (gx, gz) = ((i % side) as f32 * spacing, (i / side) as f32 * spacing);
+        let jit = if flat { 0.6 } else { 3.0 };
+        let (x, z) = (gx + (hs(i, 1) - 0.5) * jit, gz + (hs(i, 2) - 0.5) * jit);
+        let (s, y) = if flat {
+            let s = 0.9 + hs(i, 3) * 0.8;
+            (s, s * 0.947)
+        } else {
+            let s = 0.8 + hs(i, 3) * hs(i, 3) * 3.0;
+            let ground = 14.0 * (x * 0.006).sin() * (z * 0.008).cos() + 5.0 * (x * 0.02 + z * 0.015).sin();
+            (s, ground + s * 0.5)
+        };
+        insts.push([x, y, z, s]);
         insts.push([(i.wrapping_mul(0x9E3779B1) >> 16) as f32 % models as f32, hs(i, 4) * 6.2832, hs(i, 5), 0.0]);
     }
-    let extent = side as f32 * SPACING;
     let inst_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None, contents: bytemuck::cast_slice(&insts), usage: wgpu::BufferUsages::STORAGE,
     });
@@ -233,6 +350,75 @@ pub async fn create(
     let draw_bg = bind(&draw_l, &[(0, &globals), (1, &inst_buf)]);
     let vis_bg = bind(&vis_l, &[(0, &vis)]);
 
+    // Texturas (base sRGB, normal, ORM); si no hay, texturas de 1x1.
+    let textured = tex_layers > 0;
+    let (tsz, tmips, tlayers) = if textured { (tex_size, tex_mips, tex_layers) } else { (1, 1, 1) };
+    let dummy = [255u8; 4];
+    let tv = |fmt, data: &[u8]| make_tex(&device, &queue, tsz, tmips, tlayers, fmt, if textured { data } else { &dummy });
+    let t_base = tv(wgpu::TextureFormat::Rgba8UnormSrgb, tex_base);
+    let t_norm = tv(wgpu::TextureFormat::Rgba8Unorm, tex_norm);
+    let t_orm = tv(wgpu::TextureFormat::Rgba8Unorm, tex_orm);
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..Default::default()
+    });
+    let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
+        binding, visibility: S::FRAGMENT, count: None,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+    };
+    let tex_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            tex_entry(0), tex_entry(1), tex_entry(2),
+            wgpu::BindGroupLayoutEntry {
+                binding: 3, visibility: S::FRAGMENT, count: None,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            },
+        ],
+    });
+    let tex_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None, layout: &tex_l,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&t_base) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&t_norm) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&t_orm) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
+        ],
+    });
+
+    let gnd_ok = ground_size > 0;
+    let (gs, gm) = if gnd_ok { (ground_size, ground_mips) } else { (1, 1) };
+    let gtv = |fmt, data: &[u8]| make_tex(&device, &queue, gs, gm, 1, fmt, if gnd_ok { data } else { &dummy });
+    let g_base = gtv(wgpu::TextureFormat::Rgba8UnormSrgb, ground_base);
+    let g_norm = gtv(wgpu::TextureFormat::Rgba8Unorm, ground_norm);
+    let gnd_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            tex_entry(0), tex_entry(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2, visibility: S::FRAGMENT, count: None,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            },
+        ],
+    });
+    let gnd_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None, layout: &gnd_l,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&g_base) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&g_norm) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+        ],
+    });
+
     let cull_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None, bind_group_layouts: &[Some(&cull_l)], immediate_size: 0,
     });
@@ -246,16 +432,18 @@ pub async fn create(
     let draw_pl = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[Some(&draw_l), Some(&vis_l)], immediate_size: 0,
+            label: None, bind_group_layouts: &[Some(&draw_l), Some(&vis_l), Some(&tex_l)], immediate_size: 0,
         })),
         vertex: wgpu::VertexState {
             module: &module, entry_point: Some("vs"), compilation_options: Default::default(),
             buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: 12,
+                array_stride: 20,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[
                     wgpu::VertexAttribute { format: wgpu::VertexFormat::Snorm16x4, offset: 0, shader_location: 0 },
                     wgpu::VertexAttribute { format: wgpu::VertexFormat::Snorm16x2, offset: 8, shader_location: 1 },
+                    wgpu::VertexAttribute { format: wgpu::VertexFormat::Snorm16x2, offset: 12, shader_location: 2 },
+                    wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm16x2, offset: 16, shader_location: 3 },
                 ],
             })],
         },
@@ -272,6 +460,50 @@ pub async fn create(
         multisample: Default::default(), multiview_mask: None, cache: None,
     });
 
+    let ground_pl = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None, bind_group_layouts: &[Some(&draw_l), None, None, Some(&gnd_l)], immediate_size: 0,
+        })),
+        vertex: wgpu::VertexState {
+            module: &module, entry_point: Some("vs_ground"), compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &module, entry_point: Some("fs_ground"), compilation_options: Default::default(),
+            targets: &[Some(cfg.format.into())],
+        }),
+        primitive: Default::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH, depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: Default::default(), bias: Default::default(),
+        }),
+        multisample: Default::default(), multiview_mask: None, cache: None,
+    });
+
+    let sky_pl = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None, bind_group_layouts: &[Some(&draw_l)], immediate_size: 0,
+        })),
+        vertex: wgpu::VertexState {
+            module: &module, entry_point: Some("vs_sky"), compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &module, entry_point: Some("fs_sky"), compilation_options: Default::default(),
+            targets: &[Some(cfg.format.into())],
+        }),
+        primitive: Default::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH, depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
+            stencil: Default::default(), bias: Default::default(),
+        }),
+        multisample: Default::default(), multiview_mask: None, cache: None,
+    });
+
     let ts = device.features().contains(wgpu::Features::TIMESTAMP_QUERY).then(|| Ts {
         qs: device.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty: wgpu::QueryType::Timestamp, count: 4 }),
         resolve: device.create_buffer(&wgpu::BufferDescriptor {
@@ -281,11 +513,10 @@ pub async fn create(
         period: queue.get_timestamp_period(),
     });
     let depth = depth_view(&device, w, h);
-    let _ = extent;
     Ok(Phoenix {
         surface, cfg, device, queue, depth, globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
         cull_bg, draw_pl, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
-        frame: 0, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
+        frame: 0, tau: 1.0, spacing, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
         tris: Rc::new(tris), full: Rc::new(full),
     })
 }
@@ -304,9 +535,14 @@ impl Phoenix {
         self.stats.get().to_vec()
     }
 
+    /// Tolerancia de error del LOD en pixeles (1 = sin diferencia visible).
+    pub fn set_tolerance(&mut self, px: f32) {
+        self.tau = px;
+    }
+
     /// Ancho y alto de la rejilla de instancias en metros.
     pub fn extent(&self) -> f32 {
-        (self.n as f32).sqrt().ceil() * SPACING
+        (self.n as f32).sqrt().ceil() * self.spacing
     }
 
     pub fn frame(&mut self, ex: f32, ey: f32, ez: f32, yaw: f32, pitch: f32) {
@@ -324,8 +560,14 @@ impl Phoenix {
             view_proj: vp.to_cols_array(),
             cam: [ex, ey, ez, self.cfg.height as f32 / (2.0 * (FOV * 0.5).tan())],
             planes,
-            misc: [self.n as f32, self.models as f32, self.lods as f32, 1.0],
-            light: [0.5, 0.8, 0.3, 0.0],
+            misc: [self.n as f32, self.models as f32, self.lods as f32, self.tau],
+            light: if self.flat {
+                let l = Vec3::new(-0.7, 0.55, -0.25).normalize();
+                [l.x, l.y, l.z, if self.textured { 2.0 } else { 1.0 }]
+            } else {
+                [0.5, 0.8, 0.3, 0.0]
+            },
+            inv_vp: vp.inverse().to_cols_array(),
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         self.queue.write_buffer(&self.args, 0, bytemuck::cast_slice(&self.args0));
@@ -363,7 +605,7 @@ impl Phoenix {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view, depth_slice: None, resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.55, g: 0.62, b: 0.72, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.80, g: 0.77, b: 0.71, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -381,9 +623,19 @@ impl Phoenix {
                 }),
                 ..Default::default()
             });
+            if self.flat {
+                p.set_pipeline(&self.sky_pl);
+                p.set_bind_group(0, &self.draw_bg, &[]);
+                p.draw(0..3, 0..1);
+                p.set_pipeline(&self.ground_pl);
+                p.set_bind_group(0, &self.draw_bg, &[]);
+                p.set_bind_group(3, &self.gnd_bg, &[]);
+                p.draw(0..6, 0..1);
+            }
             p.set_pipeline(&self.draw_pl);
             p.set_bind_group(0, &self.draw_bg, &[]);
             p.set_bind_group(1, &self.vis_bg, &[]);
+            p.set_bind_group(2, &self.tex_bg, &[]);
             p.set_vertex_buffer(0, self.vbuf.slice(..));
             p.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             for d in 0..(self.models * self.lods) as u64 {

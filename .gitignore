@@ -1,3 +1,5 @@
 target/
 pkg/
 web/assets/
+web/assets-*/
+assets-src/

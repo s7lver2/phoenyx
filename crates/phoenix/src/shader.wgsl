@@ -6,12 +6,13 @@ struct Globals {
   planes: array<vec4<f32>, 6>,
   misc: vec4<f32>,         // n instancias, n modelos, n LOD, tolerancia de error (px)
   light: vec4<f32>,
+  inv_vp: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
 // 2 vec4 por instancia: (pos, escala) y (modelo, yaw, hash, 0)
 @group(0) @binding(1) var<storage, read> inst: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read> lodinfo: array<f32>;      // 8 floats por modelo: radio, err0..err5, pad
+@group(0) @binding(2) var<storage, read> lodinfo: array<f32>;      // 16 floats por modelo: radio, err0..err9, 2 libres, base, alto, 1 libre
 @group(0) @binding(3) var<storage, read_write> args: array<atomic<u32>>; // 5 u32 por draw
 @group(0) @binding(4) var<storage, read_write> cur: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> vis: array<u32>;
@@ -33,7 +34,7 @@ fn pick(i: u32) -> i32 {
   // LOD mas grueso cuyo error proyectado cabe en la tolerancia.
   for (var kk = 0u; kk + 1u < nl; kk++) {
     let c = nl - 1u - kk;
-    if (lodinfo[m * 8u + 1u + c] * k <= g.misc.w) { l = c; break; }
+    if (lodinfo[m * 16u + 1u + c] * k <= g.misc.w) { l = c; break; }
   }
   return i32(m * nl + l);
 }
@@ -74,7 +75,17 @@ struct VOut {
   @location(1) col: vec3<f32>,
   @location(2) dist: f32,
   @location(3) rad: f32,
+  @location(4) t: vec3<f32>,
+  @location(5) bs: f32,
+  @location(6) uv: vec2<f32>,
+  @location(7) @interpolate(flat) layer: u32,
+  @location(8) wpos: vec3<f32>,
 };
+
+@group(2) @binding(0) var tbase: texture_2d_array<f32>;
+@group(2) @binding(1) var tnorm: texture_2d_array<f32>;
+@group(2) @binding(2) var torm: texture_2d_array<f32>;
+@group(2) @binding(3) var tsamp: sampler;
 
 fn unoct(e: vec2<f32>) -> vec3<f32> {
   var v = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
@@ -91,7 +102,8 @@ fn yaw(v: vec3<f32>, c: f32, s: f32) -> vec3<f32> {
 }
 
 @vertex
-fn vs(@location(0) p: vec4<f32>, @location(1) e: vec2<f32>, @builtin(instance_index) ii: u32) -> VOut {
+fn vs(@location(0) p: vec4<f32>, @location(1) e: vec2<f32>, @location(2) tg: vec2<f32>,
+      @location(3) uv: vec2<f32>, @builtin(instance_index) ii: u32) -> VOut {
   let i = visr[ii];
   let a = inst[2u * i];
   let b = inst[2u * i + 1u];
@@ -101,10 +113,18 @@ fn vs(@location(0) p: vec4<f32>, @location(1) e: vec2<f32>, @builtin(instance_in
   var o: VOut;
   o.pos = g.view_proj * vec4<f32>(w, 1.0);
   o.n = yaw(unoct(e), c, s);
+  o.t = yaw(unoct(tg), c, s);
+  o.bs = select(-1.0, 1.0, p.w >= 0.0);
+  o.uv = uv;
+  o.layer = u32(b.x);
+  o.wpos = w;
   let m = b.x;
-  let tint = 0.8 + 0.4 * b.z;
-  o.col = tint * (vec3<f32>(0.55, 0.5, 0.42) + 0.35 * vec3<f32>(
+  let tint = select(0.8 + 0.4 * b.z, 0.96 + 0.08 * b.z, g.light.w > 0.5);
+  // light.w = 1: estatuas de marmol; si no, paleta por modelo.
+  let stone = tint * vec3<f32>(0.86, 0.84, 0.79);
+  let pal = tint * (vec3<f32>(0.55, 0.5, 0.42) + 0.35 * vec3<f32>(
       sin(m * 1.7 + 0.0), sin(m * 2.3 + 2.0), sin(m * 3.1 + 4.0)) * 0.5);
+  o.col = select(pal, stone, g.light.w > 0.5);
   o.dist = distance(w, g.cam.xyz);
   o.rad = length(p.xyz);
   return o;
@@ -112,13 +132,167 @@ fn vs(@location(0) p: vec4<f32>, @location(1) e: vec2<f32>, @builtin(instance_in
 
 @fragment
 fn fs(v: VOut) -> @location(0) vec4<f32> {
+  if (g.light.w > 1.5) {
+    // Modo texturizado: base sRGB, mapa de normales y ORM; iluminacion en lineal y gamma al final.
+    let albedo = textureSample(tbase, tsamp, v.uv, v.layer).rgb;
+    let nm = textureSample(tnorm, tsamp, v.uv, v.layer).xyz * 2.0 - 1.0;
+    let orm = textureSample(torm, tsamp, v.uv, v.layer).rgb;
+    let n0 = normalize(v.n);
+    let tt = normalize(v.t - n0 * dot(n0, v.t));
+    let bb = cross(n0, tt) * v.bs;
+    let nn = normalize(tt * nm.x + bb * nm.y + n0 * nm.z);
+    let l = g.light.xyz;
+    let view = normalize(g.cam.xyz - v.wpos);
+    let diff = clamp(dot(nn, l) * 0.85 + 0.15, 0.0, 1.0);
+    let sunc = vec3<f32>(1.0, 0.92, 0.80) * 2.4;
+    let amb = mix(vec3<f32>(0.30, 0.24, 0.17), vec3<f32>(0.42, 0.52, 0.72), nn.y * 0.5 + 0.5) * 0.9;
+    let h = normalize(l + view);
+    let spec = pow(max(dot(nn, h), 0.0), mix(6.0, 90.0, 1.0 - orm.g)) * (1.0 - orm.g) * 0.35;
+    // Contacto con el suelo: polvo y oscurecimiento en la base de rocas y estatuas.
+    let gy = smoothstep(0.0, 0.8, v.wpos.y);
+    let dust = vec3<f32>(0.40, 0.27, 0.15) * (1.0 - smoothstep(0.0, 0.45, v.wpos.y));
+    let alb2 = mix(albedo, dust, 0.45 * (1.0 - smoothstep(0.0, 0.5, v.wpos.y)));
+    var lit = alb2 * (sunc * diff + amb) * orm.r * mix(0.55, 1.0, gy) + sunc * spec * diff * gy;
+    lit = vec3<f32>(1.0) - exp(-lit * 1.15);
+    let fogt = clamp(v.dist / 2500.0, 0.0, 1.0);
+    let hazel = pow(vec3<f32>(0.80, 0.77, 0.71), vec3<f32>(2.2));
+    let outl = mix(lit, hazel, fogt * fogt);
+    return vec4<f32>(pow(outl, vec3<f32>(1.0 / 2.2)), 1.0);
+  }
   let n = normalize(v.n);
-  let sun = max(dot(n, g.light.xyz), 0.0);
+  let flat_mode = g.light.w > 0.5;
+  let sun = select(max(dot(n, g.light.xyz), 0.0),
+                   pow(clamp(dot(n, g.light.xyz) * 0.6 + 0.4, 0.0, 1.0), 1.5), flat_mode);
   let sky = 0.5 + 0.5 * n.y;
-  // Los valles (radio local bajo) quedan mas oscuros.
-  let ao = mix(0.45, 1.0, smoothstep(0.45, 0.95, v.rad));
+  // Los valles (radio local bajo) quedan mas oscuros (rocas); las estatuas, apenas.
+  let ao = select(mix(0.45, 1.0, smoothstep(0.45, 0.95, v.rad)),
+                  mix(0.7, 1.0, clamp(v.rad * 3.0, 0.0, 1.0)), flat_mode);
   let lit = (sun * 0.9 + sky * 0.35) * ao;
   let fog = clamp(v.dist / 2500.0, 0.0, 1.0);
-  let haze = vec3<f32>(0.55, 0.62, 0.72);
+  let haze = select(vec3<f32>(0.55, 0.62, 0.72), vec3<f32>(0.80, 0.77, 0.71), flat_mode);
   return vec4<f32>(mix(v.col * lit, haze, fog * fog), 1.0);
+}
+
+// ---- Suelo (modo plano) ----
+struct GOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) w: vec3<f32>,
+};
+
+@vertex
+fn vs_ground(@builtin(vertex_index) vi: u32) -> GOut {
+  var c = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(1.0, -1.0),
+                              vec2(-1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0));
+  let q = c[vi] * 6000.0;
+  let w = vec3<f32>(g.cam.x + q.x, 0.0, g.cam.z + q.y);
+  var o: GOut;
+  o.pos = g.view_proj * vec4<f32>(w, 1.0);
+  o.w = w;
+  return o;
+}
+
+fn h21(p: vec2<f32>) -> f32 { return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453); }
+fn vn(p: vec2<f32>) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h21(i), h21(i + vec2<f32>(1.0, 0.0)), u.x),
+             mix(h21(i + vec2<f32>(0.0, 1.0)), h21(i + vec2<f32>(1.0, 1.0)), u.x), u.y);
+}
+
+@group(3) @binding(0) var gbase: texture_2d_array<f32>;
+@group(3) @binding(1) var gnorm: texture_2d_array<f32>;
+@group(3) @binding(2) var gsamp: sampler;
+
+@fragment
+fn fs_ground(v: GOut) -> @location(0) vec4<f32> {
+  let d = distance(v.w, g.cam.xyz);
+  let fog = clamp(d / 2500.0, 0.0, 1.0);
+  if (g.light.w > 1.5) {
+    // Material Megascans tileable (1 m) a dos escalas para romper la repeticion.
+    let p = v.w.xz;
+    let uv1 = p;
+    let uv2 = p / 5.3 + vec2<f32>(0.37, 0.71);
+    let mixk = 0.35 + 0.4 * smoothstep(0.3, 0.7, vn(p * 0.05));
+    let b1 = textureSample(gbase, gsamp, uv1, 0).rgb;
+    let b2 = textureSample(gbase, gsamp, uv2, 0).rgb;
+    var alb = mix(b1, b2, mixk) * (0.82 + 0.36 * vn(p * 0.011));
+    let n1 = textureSample(gnorm, gsamp, uv1, 0);
+    let n2 = textureSample(gnorm, gsamp, uv2, 0);
+    let nm = normalize((mix(n1.xyz, n2.xyz, mixk)) * 2.0 - 1.0);
+    let nn = normalize(vec3<f32>(nm.x, nm.z, -nm.y));
+    let l = g.light.xyz;
+    let diff = clamp(dot(nn, l) * 0.9 + 0.1, 0.0, 1.0);
+    let sunc = vec3<f32>(1.0, 0.92, 0.80) * 2.4;
+    let amb = vec3<f32>(0.40, 0.46, 0.60) * 0.8;
+    var lit = alb * (sunc * diff + amb);
+    lit = vec3<f32>(1.0) - exp(-lit * 1.15);
+    let hazel = pow(vec3<f32>(0.80, 0.77, 0.71), vec3<f32>(2.2));
+    return vec4<f32>(pow(mix(lit, hazel, fog * fog), vec3<f32>(1.0 / 2.2)), 1.0);
+  }
+  // Sin texturas: tierra procedural.
+  let far = clamp(d / 250.0, 0.0, 1.0);
+  let n = vn(v.w.xz * 0.05) * 0.5 + vn(v.w.xz * 0.6) * 0.3 + mix(vn(v.w.xz * 5.0), 0.5, far) * 0.2;
+  let base = mix(vec3<f32>(0.48, 0.36, 0.25), vec3<f32>(0.68, 0.56, 0.42), n);
+  return vec4<f32>(mix(base, vec3<f32>(0.80, 0.77, 0.71), fog * fog), 1.0);
+}
+
+// ---- Cielo con montanas lejanas ----
+struct SOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) ndc: vec2<f32>,
+};
+
+@vertex
+fn vs_sky(@builtin(vertex_index) vi: u32) -> SOut {
+  var c = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  var o: SOut;
+  o.pos = vec4<f32>(c[vi], 1.0, 1.0);
+  o.ndc = c[vi];
+  return o;
+}
+
+fn fbm2(p: vec2<f32>) -> f32 {
+  var a = 0.5;
+  var s = 0.0;
+  var q = p;
+  for (var i = 0; i < 5; i++) {
+    s += a * vn(q);
+    q = q * 2.03 + vec2<f32>(17.1, 9.2);
+    a *= 0.5;
+  }
+  return s;
+}
+
+@fragment
+fn fs_sky(v: SOut) -> @location(0) vec4<f32> {
+  let w4 = g.inv_vp * vec4<f32>(v.ndc, 1.0, 1.0);
+  let dir = normalize(w4.xyz / w4.w - g.cam.xyz);
+  let sun = g.light.xyz;
+  let sd = max(dot(dir, sun), 0.0);
+  let haze = vec3<f32>(0.80, 0.77, 0.71);
+  // Dispersion de Rayleigh aproximada: azul profundo arriba, horizonte palido y calido hacia el sol.
+  let el = clamp(dir.y, 0.0, 1.0);
+  var col = mix(haze, vec3<f32>(0.14, 0.32, 0.72), pow(el, 0.5));
+  col = mix(col, vec3<f32>(1.0, 0.82, 0.58), pow(sd, 6.0) * (1.0 - el) * 0.55);
+  col += vec3<f32>(1.0, 0.88, 0.65) * (pow(sd, 900.0) * 6.0 + pow(sd, 48.0) * 0.45);
+  // Nubes: capa plana a 1800 m con fbm, iluminadas desde el sol.
+  if (dir.y > 0.012) {
+    let tcl = 1800.0 / dir.y;
+    let cp = (g.cam.xz + dir.xz * tcl) * 0.00045;
+    let dens = smoothstep(0.50, 0.78, fbm2(cp + vec2<f32>(3.7, 1.3)));
+    let edge = smoothstep(0.50, 0.78, fbm2(cp + vec2<f32>(3.7, 1.3) + sun.xz * 0.06));
+    let shade = clamp(1.0 - (edge - dens) * 2.2, 0.35, 1.0);
+    let ccol = mix(vec3<f32>(0.62, 0.64, 0.70), vec3<f32>(1.0, 0.97, 0.92), shade);
+    col = mix(col, ccol, dens * smoothstep(0.012, 0.12, dir.y) * 0.92);
+  }
+  // Montanas lejanas en dos capas con perspectiva aerea.
+  let az = atan2(dir.x, dir.z);
+  let h1 = 0.05 + 0.035 * sin(az * 3.0 + 1.0) + 0.02 * sin(az * 7.0 + 4.0) + 0.01 * sin(az * 17.0 + 2.0);
+  let h2 = 0.028 + 0.025 * sin(az * 5.0 + 2.5) + 0.012 * sin(az * 11.0 + 0.5) + 0.006 * sin(az * 29.0);
+  let m1 = smoothstep(h1, h1 - 0.004, dir.y);
+  let m2 = smoothstep(h2, h2 - 0.003, dir.y);
+  col = mix(col, mix(haze, vec3<f32>(0.62, 0.58, 0.54), 0.5), m1);
+  col = mix(col, mix(haze, vec3<f32>(0.50, 0.45, 0.40), 0.55), m2);
+  return vec4<f32>(col, 1.0);
 }

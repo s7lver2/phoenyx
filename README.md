@@ -12,29 +12,26 @@ Pensado primero para el juego Backrooms (`E:/backrooms`), pero sin depender de e
 - Vercel: solo estaticos. El `.wasm` se compila en local y se versiona/copia al cliente.
 
 ## Estado
-**M0** (commits anteriores): culling y LOD de una malla en GPU, draws indirectos, timestamps de GPU.
+**M0:** culling y LOD de una malla en GPU, draws indirectos, timestamps de GPU.
 
-**M1 (demo avanzada):**
-- `phoenix-bake` (nativo): genera 8 modelos procedurales de 327.680 triangulos (`--sub 8` = 1,3 M) con relieve de fbm, 6 LOD por modelo con `meshopt` (simplificacion con error absoluto, orden de cache, bloques de vertices compactos), vertices de 12 B (pos snorm16 + normal octaedrica).
-- Runtime: LOD por error en pantalla (px) con la tabla de errores del bake, frustum culling, y generacion de draws en 3 pasadas de compute (count, scan, scatter). `first_instance` indirecto indexa un unico buffer de visibles. 48 draws indirectos por frame, constante.
-- Demo: `web/index.html` (piloto automatico; `F` = vuelo libre con WASD).
+**M1:** bake de modelos con cadena de LOD (meshopt), culling en 3 pasadas (count, scan, scatter), draws indirectos.
 
-Medido (RTX Lovelace, Chrome, 1280x720, vsync 180 Hz):
+**M2 (demo cinematografica, ~55 s):** escaneos reales de Quixel Megascans (estatua Komainu de 2.000.006 triangulos y rocas), texturas PBR (base, normal, ORM) con mipmaps y anisotropia, suelo Megascans tileable, cielo atmosferico con nubes y montanas, 2.000.000 de estatuas en bloques con pasillos, planos de aproximacion a las estatuas.
+- `phoenix-bake --kind glb --glb a.glb,b.glb --ground <dir> --out web/assets-ms`: importa glTF/GLB (con texturas de hasta 8192), centra/escala a esfera unidad, 10 niveles de LOD (simplificacion con error absoluto y "sloppy" para los niveles finales), vertices de 20 B (pos snorm16, normal y tangente octaedricas, UV unorm16), mips de las texturas.
+- LOD por error en pantalla (1 px) con la tabla de errores del bake.
+- Medido en el vuelo por el pasillo: ~918 G de triangulos a resolucion completa, ~17 M dibujados (antes de ampliar la cadena de LOD de 6 a 10 niveles se dibujaban ~893 M). GPU: culling ~0,7 ms, render ~2,2 ms con 460 k estatuas visibles.
+- Aun NO hay: sombras, culling por oclusion (Hi-Z), LOD por cluster (esto es LOD discreto por instancia, no la jerarquia de clusters de Nanite), visibility buffer ni rasterizado de microtriangulos.
 
-| instancias | tris a resolucion completa | tris dibujados | GPU cull+render | CPU submit |
-|---|---|---|---|---|
-| 160 k | 6,0 G | 6,2 M | 0,53 ms | 0,25 ms |
-| 1 M | 35,5 G | 11,6 M | 1,5 ms | 0,26 ms |
-
-Los timestamps de Chrome se cuantizan, tomalos como orden de magnitud. No esta comparado todavia con el renderer three.js de Backrooms.
+Los datos de Megascans (`assets-src/`, `web/assets-*/`) no se versionan: la licencia no permite redistribuir los originales. Se descargan de Fab con sesion iniciada.
 
 ```
-cargo run --release -p phoenix-bake -- --sub 7 --models 8 --out web/assets   # una vez (web/assets esta en .gitignore)
+cargo build --release -p phoenix-bake
+./target/release/phoenix-bake --kind glb --glb <a.glb,b.glb,...> --tex 2048 --ground <dir-superficie> --out web/assets-ms
 cargo build --release --target wasm32-unknown-unknown -p phoenix
 wasm-bindgen --target web --out-dir web/pkg target/wasm32-unknown-unknown/release/phoenix.wasm
-python -m http.server 5200 --directory web     # http://localhost:5200/?n=1000000
+python -m http.server 5200 --directory web     # http://localhost:5200/   (F vuelo libre, H estadisticas, R reiniciar)
 ```
-Requiere `wasm-bindgen-cli` 0.2.130 (`cargo install wasm-bindgen-cli --version 0.2.130`).
+Requiere `wasm-bindgen-cli` 0.2.130.
 
 ## Siguiente
-Jerarquia de clusters (DAG de LOD por cluster) en vez de LOD por instancia, culling por oclusion (Hi-Z), cargar glTF reales, materiales/texturas, sombras, post-proceso, integracion en Las Suites y medir contra el renderer actual.
+Hi-Z, jerarquia de clusters, sombras, libreria modular (`phoenix-render`, `phoenix-bake`, `phoenix-net`, `phoenix-sim`), motor multijugador (red, voz, desconexiones), integracion en Las Suites.
