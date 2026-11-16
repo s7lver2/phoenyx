@@ -1,5 +1,7 @@
-//! Phoenix M0: culling + LOD en GPU y dibujo indirecto (WebGPU).
-//! La CPU solo sube una matriz por frame y encola 1 compute + 3 draws indirectos.
+//! Phoenix: escena GPU-driven en WebGPU.
+//! Varios modelos de muy alta resolucion con cadena de LOD (bake offline), seleccion de LOD por
+//! error en pantalla, frustum culling y generacion de draws en 3 pasadas de compute
+//! (count -> scan -> scatter). La CPU solo sube la camara y encola draws indirectos.
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use std::{cell::Cell, rc::Rc};
@@ -7,12 +9,8 @@ use wasm_bindgen::prelude::*;
 use wgpu::util::DeviceExt;
 
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-// Subdivisiones de la icosfera por LOD: 5120, 320 y 80 triangulos.
-const LODS: [u32; 3] = [4, 2, 1];
-// Umbrales de LOD en pixeles de diametro en pantalla.
-const LOD_PX: [f32; 2] = [60.0, 14.0];
 const FOV: f32 = 1.1;
-const SPACING: f32 = 6.0;
+const SPACING: f32 = 4.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -20,47 +18,8 @@ struct Globals {
     view_proj: [f32; 16],
     cam: [f32; 4],
     planes: [[f32; 4]; 6],
-    lod: [f32; 4],
+    misc: [f32; 4],
     light: [f32; 4],
-}
-
-/// Icosfera unitaria: solo posiciones (la normal es la posicion) e indices u16.
-fn icosphere(sub: u32) -> (Vec<[f32; 3]>, Vec<u16>) {
-    let t = (1.0 + 5f32.sqrt()) / 2.0;
-    let mut v: Vec<Vec3> = [
-        (-1., t, 0.), (1., t, 0.), (-1., -t, 0.), (1., -t, 0.),
-        (0., -1., t), (0., 1., t), (0., -1., -t), (0., 1., -t),
-        (t, 0., -1.), (t, 0., 1.), (-t, 0., -1.), (-t, 0., 1.),
-    ]
-    .iter()
-    .map(|&(x, y, z)| Vec3::new(x, y, z).normalize())
-    .collect();
-    let mut f: Vec<[u32; 3]> = vec![
-        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
-        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
-        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
-    ];
-    for _ in 0..sub {
-        let mut cache = std::collections::HashMap::new();
-        let mut mid = |a: u32, b: u32, v: &mut Vec<Vec3>| -> u32 {
-            let k = (a.min(b), a.max(b));
-            *cache.entry(k).or_insert_with(|| {
-                v.push(((v[a as usize] + v[b as usize]) * 0.5).normalize());
-                v.len() as u32 - 1
-            })
-        };
-        let mut nf = Vec::with_capacity(f.len() * 4);
-        for [a, b, c] in f {
-            let (ab, bc, ca) = (mid(a, b, &mut v), mid(b, c, &mut v), mid(c, a, &mut v));
-            nf.extend([[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]]);
-        }
-        f = nf;
-    }
-    (
-        v.iter().map(|p| p.to_array()).collect(),
-        f.iter().flatten().map(|&i| i as u16).collect(),
-    )
 }
 
 struct Ts {
@@ -78,24 +37,30 @@ pub struct Phoenix {
     depth: wgpu::TextureView,
     globals: wgpu::Buffer,
     args: wgpu::Buffer,
+    cur: wgpu::Buffer,
     staging: wgpu::Buffer,
-    cull_pl: wgpu::ComputePipeline,
+    count_pl: wgpu::ComputePipeline,
+    scan_pl: wgpu::ComputePipeline,
+    scatter_pl: wgpu::ComputePipeline,
     cull_bg: wgpu::BindGroup,
     draw_pl: wgpu::RenderPipeline,
     draw_bg: wgpu::BindGroup,
-    vis_bg: [wgpu::BindGroup; 3],
+    vis_bg: wgpu::BindGroup,
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
-    // (indices, primer indice, vertice base) por LOD
-    lods: [(u32, u32, i32); 3],
+    // Argumentos indirectos iniciales (instance_count y first_instance a 0).
+    args0: Vec<u32>,
+    zeros: Vec<u32>,
     n: u32,
-    extent: f32,
+    models: u32,
+    lods: u32,
     frame: u64,
     busy: Rc<Cell<bool>>,
-    counts: Rc<Cell<[u32; 3]>>,
+    // [visibles, tris dibujados, tris a resolucion completa, draws no vacios, cull ms, render ms]
+    stats: Rc<Cell<[f64; 6]>>,
     ts: Option<Ts>,
-    // ms de GPU: [cull, render] segun el ultimo readback
-    gpu: Rc<Cell<[f32; 2]>>,
+    tris: Rc<Vec<u32>>,
+    full: Rc<Vec<u32>>,
 }
 
 fn depth_view(d: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
@@ -112,7 +77,7 @@ fn depth_view(d: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
     .create_view(&Default::default())
 }
 
-fn storage(ty: wgpu::BufferBindingType, binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+fn entry(ty: wgpu::BufferBindingType, binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: vis,
@@ -121,14 +86,27 @@ fn storage(ty: wgpu::BufferBindingType, binding: u32, vis: wgpu::ShaderStages) -
     }
 }
 
+fn err<E: std::fmt::Display>(e: E) -> JsValue {
+    JsValue::from_str(&e.to_string())
+}
+
+/// `draws`: [index_count, first_index, base_vertex] por (modelo, lod), modelo-major.
+/// `info`: 8 floats por modelo (radio, error de cada LOD).
 #[wasm_bindgen]
-pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Phoenix, JsValue> {
+pub async fn create(
+    canvas: web_sys::HtmlCanvasElement,
+    verts: &[u8],
+    idx: &[u8],
+    info: &[f32],
+    draws: &[u32],
+    models: u32,
+    lods: u32,
+    count: u32,
+) -> Result<Phoenix, JsValue> {
     console_error_panic_hook::set_once();
     let (w, h) = (canvas.width().max(1), canvas.height().max(1));
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let surface = instance
-        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas)).map_err(err)?;
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -136,69 +114,88 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Ph
             ..Default::default()
         })
         .await
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        .map_err(err)?;
+    if !adapter.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE) {
+        return Err("el adaptador no soporta indirect-first-instance".into());
+    }
+    let max = adapter.limits();
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
-            required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+            required_features: wgpu::Features::INDIRECT_FIRST_INSTANCE
+                | (adapter.features() & wgpu::Features::TIMESTAMP_QUERY),
+            required_limits: wgpu::Limits {
+                max_buffer_size: max.max_buffer_size,
+                max_storage_buffer_binding_size: max.max_storage_buffer_binding_size,
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        .map_err(err)?;
 
-    let mut cfg = surface
-        .get_default_config(&adapter, w, h)
-        .ok_or("superficie sin config")?;
+    let mut cfg = surface.get_default_config(&adapter, w, h).ok_or("superficie sin config")?;
     cfg.present_mode = wgpu::PresentMode::AutoVsync;
     surface.configure(&device, &cfg);
 
-    // Malla: un solo vertex/index buffer con los 3 LOD concatenados.
-    let (mut verts, mut idx, mut lods) = (Vec::new(), Vec::new(), [(0, 0, 0); 3]);
-    for (k, &s) in LODS.iter().enumerate() {
-        let (v, i) = icosphere(s);
-        lods[k] = (i.len() as u32, idx.len() as u32, verts.len() as i32);
-        verts.extend(v);
-        idx.extend(i);
-    }
     let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None, contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX,
+        label: None, contents: verts, usage: wgpu::BufferUsages::VERTEX,
     });
-    // u16 con relleno a multiplo de 4 bytes.
-    if idx.len() % 2 == 1 { idx.push(0); }
     let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None, contents: bytemuck::cast_slice(&idx), usage: wgpu::BufferUsages::INDEX,
+        label: None, contents: idx, usage: wgpu::BufferUsages::INDEX,
+    });
+    let info_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None, contents: bytemuck::cast_slice(info), usage: wgpu::BufferUsages::STORAGE,
     });
 
-    // Instancias en rejilla con altura pseudoaleatoria y escala variable.
+    // Instancias: rejilla con relieve suave, modelo y yaw pseudoaleatorios.
     let side = (count as f32).sqrt().ceil() as u32;
+    let mut insts: Vec<[f32; 4]> = Vec::with_capacity(count as usize * 2);
+    let hs = |i: u32, k: u32| ((i.wrapping_mul(2654435761).wrapping_add(k.wrapping_mul(40503)) >> 7) & 0xffff) as f32 / 65535.0;
+    for i in 0..count {
+        let (gx, gz) = ((i % side) as f32 * SPACING, (i / side) as f32 * SPACING);
+        let (x, z) = (gx + (hs(i, 1) - 0.5) * 3.0, gz + (hs(i, 2) - 0.5) * 3.0);
+        let s = 0.8 + hs(i, 3) * hs(i, 3) * 3.0;
+        let ground = 14.0 * (x * 0.006).sin() * (z * 0.008).cos() + 5.0 * (x * 0.02 + z * 0.015).sin();
+        insts.push([x, ground + s * 0.5, z, s]);
+        insts.push([(i.wrapping_mul(0x9E3779B1) >> 16) as f32 % models as f32, hs(i, 4) * 6.2832, hs(i, 5), 0.0]);
+    }
     let extent = side as f32 * SPACING;
-    let insts: Vec<[f32; 4]> = (0..count)
-        .map(|i| {
-            let (x, z) = ((i % side) as f32, (i / side) as f32);
-            let hsh = (i.wrapping_mul(2654435761) >> 8 & 0xffff) as f32 / 65535.0;
-            [x * SPACING, hsh * 6.0, z * SPACING, 1.0 + hsh * 1.5]
-        })
-        .collect();
     let inst_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None, contents: bytemuck::cast_slice(&insts), usage: wgpu::BufferUsages::STORAGE,
     });
+
+    let nd = (models * lods) as usize;
+    let mut args0 = vec![0u32; nd * 5];
+    let mut tris = vec![0u32; nd];
+    let mut full = vec![0u32; nd];
+    for d in 0..nd {
+        args0[d * 5] = draws[d * 3];
+        args0[d * 5 + 2] = draws[d * 3 + 1];
+        args0[d * 5 + 3] = draws[d * 3 + 2];
+        tris[d] = draws[d * 3] / 3;
+        full[d] = draws[(d / lods as usize) * lods as usize * 3] / 3;
+    }
     let globals = device.create_buffer(&wgpu::BufferDescriptor {
         label: None, size: size_of::<Globals>() as u64, mapped_at_creation: false,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
     let args = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None, size: 60, mapped_at_creation: false,
+        label: None, size: (nd * 20) as u64, mapped_at_creation: false,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT
             | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
     });
+    let cur = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None, size: (nd * 4) as u64, mapped_at_creation: false,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    });
+    let stage_size = ((nd * 20 + 63) / 64 * 64 + 32) as u64;
     let staging = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None, size: 96, mapped_at_creation: false,
+        label: None, size: stage_size, mapped_at_creation: false,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
     });
-    let vis: [wgpu::Buffer; 3] = std::array::from_fn(|_| {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: None, size: count as u64 * 4, mapped_at_creation: false,
-            usage: wgpu::BufferUsages::STORAGE,
-        })
+    let vis = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None, size: count as u64 * 4, mapped_at_creation: false,
+        usage: wgpu::BufferUsages::STORAGE,
     });
 
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -207,25 +204,23 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Ph
     use wgpu::{BufferBindingType as B, ShaderStages as S};
     let uni = |vis| wgpu::BindGroupLayoutEntry {
         binding: 0, visibility: vis, count: None,
-        ty: wgpu::BindingType::Buffer {
-            ty: B::Uniform, has_dynamic_offset: false, min_binding_size: None,
-        },
+        ty: wgpu::BindingType::Buffer { ty: B::Uniform, has_dynamic_offset: false, min_binding_size: None },
     };
     let ro = B::Storage { read_only: true };
     let rw = B::Storage { read_only: false };
     let cull_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
         entries: &[
-            uni(S::COMPUTE), storage(ro, 1, S::COMPUTE), storage(rw, 2, S::COMPUTE),
-            storage(rw, 3, S::COMPUTE), storage(rw, 4, S::COMPUTE), storage(rw, 5, S::COMPUTE),
+            uni(S::COMPUTE), entry(ro, 1, S::COMPUTE), entry(ro, 2, S::COMPUTE),
+            entry(rw, 3, S::COMPUTE), entry(rw, 4, S::COMPUTE), entry(rw, 5, S::COMPUTE),
         ],
     });
     let draw_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
-        entries: &[uni(S::VERTEX | S::FRAGMENT), storage(ro, 1, S::VERTEX)],
+        entries: &[uni(S::VERTEX | S::FRAGMENT), entry(ro, 1, S::VERTEX)],
     });
     let vis_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: None, entries: &[storage(ro, 0, S::VERTEX)],
+        label: None, entries: &[entry(ro, 0, S::VERTEX)],
     });
     let bind = |l: &wgpu::BindGroupLayout, bs: &[(u32, &wgpu::Buffer)]| {
         let e: Vec<_> = bs
@@ -234,18 +229,20 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Ph
             .collect();
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: l, entries: &e })
     };
-    let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &args), (3, &vis[0]), (4, &vis[1]), (5, &vis[2])]);
+    let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &info_buf), (3, &args), (4, &cur), (5, &vis)]);
     let draw_bg = bind(&draw_l, &[(0, &globals), (1, &inst_buf)]);
-    let vis_bg = [bind(&vis_l, &[(0, &vis[0])]), bind(&vis_l, &[(0, &vis[1])]), bind(&vis_l, &[(0, &vis[2])])];
+    let vis_bg = bind(&vis_l, &[(0, &vis)]);
 
-    let cull_pl = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: None,
-        layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[Some(&cull_l)], immediate_size: 0,
-        })),
-        module: &module, entry_point: Some("cull"),
-        compilation_options: Default::default(), cache: None,
+    let cull_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None, bind_group_layouts: &[Some(&cull_l)], immediate_size: 0,
     });
+    let cpl = |entry_point: &str| {
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None, layout: Some(&cull_layout), module: &module,
+            entry_point: Some(entry_point), compilation_options: Default::default(), cache: None,
+        })
+    };
+    let (count_pl, scan_pl, scatter_pl) = (cpl("count"), cpl("scan"), cpl("scatter"));
     let draw_pl = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -256,7 +253,10 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Ph
             buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: 12,
                 step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+                attributes: &[
+                    wgpu::VertexAttribute { format: wgpu::VertexFormat::Snorm16x4, offset: 0, shader_location: 0 },
+                    wgpu::VertexAttribute { format: wgpu::VertexFormat::Snorm16x2, offset: 8, shader_location: 1 },
+                ],
             })],
         },
         fragment: Some(wgpu::FragmentState {
@@ -273,9 +273,7 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Ph
     });
 
     let ts = device.features().contains(wgpu::Features::TIMESTAMP_QUERY).then(|| Ts {
-        qs: device.create_query_set(&wgpu::QuerySetDescriptor {
-            label: None, ty: wgpu::QueryType::Timestamp, count: 4,
-        }),
+        qs: device.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty: wgpu::QueryType::Timestamp, count: 4 }),
         resolve: device.create_buffer(&wgpu::BufferDescriptor {
             label: None, size: 32, mapped_at_creation: false,
             usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
@@ -283,11 +281,12 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, count: u32) -> Result<Ph
         period: queue.get_timestamp_period(),
     });
     let depth = depth_view(&device, w, h);
+    let _ = extent;
     Ok(Phoenix {
-        surface, cfg, device, queue, depth, globals, args, staging, cull_pl, cull_bg, draw_pl,
-        draw_bg, vis_bg, vbuf, ibuf, lods, n: count, extent, frame: 0,
-        busy: Rc::new(Cell::new(false)), counts: Rc::new(Cell::new([0; 3])),
-        ts, gpu: Rc::new(Cell::new([0.0; 2])),
+        surface, cfg, device, queue, depth, globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
+        cull_bg, draw_pl, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
+        frame: 0, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
+        tris: Rc::new(tris), full: Rc::new(full),
     })
 }
 
@@ -300,32 +299,21 @@ impl Phoenix {
         self.depth = depth_view(&self.device, self.cfg.width, self.cfg.height);
     }
 
-    /// Instancias visibles por LOD en el ultimo readback (llega con unos frames de retraso).
-    pub fn counts(&self) -> Vec<u32> {
-        self.counts.get().to_vec()
+    /// [visibles, tris dibujados, tris a resolucion completa, draws no vacios, cull ms, render ms]
+    pub fn stats(&self) -> Vec<f64> {
+        self.stats.get().to_vec()
     }
 
-    /// Triangulos dibujados segun el ultimo readback.
-    pub fn triangles(&self) -> f64 {
-        let c = self.counts.get();
-        (0..3).map(|k| c[k] as f64 * (self.lods[k].0 / 3) as f64).sum()
+    /// Ancho y alto de la rejilla de instancias en metros.
+    pub fn extent(&self) -> f32 {
+        (self.n as f32).sqrt().ceil() * SPACING
     }
 
-    /// [cull_ms, render_ms] de GPU (vacio si no hay timestamp-query).
-    pub fn gpu_ms(&self) -> Vec<f32> {
-        if self.ts.is_some() { self.gpu.get().to_vec() } else { vec![] }
-    }
-
-    pub fn frame(&mut self, t: f64) {
-        let t = t as f32;
-        // Camara: circulo sobre la rejilla mirando en la tangente.
-        let c = self.extent * 0.5;
-        let r = self.extent * 0.3;
-        let a = t * 0.08;
-        let eye = Vec3::new(c + r * a.cos(), 22.0, c + r * a.sin());
-        let dir = Vec3::new(-a.sin(), -0.12, a.cos());
+    pub fn frame(&mut self, ex: f32, ey: f32, ez: f32, yaw: f32, pitch: f32) {
+        let eye = Vec3::new(ex, ey, ez);
+        let dir = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos());
         let aspect = self.cfg.width as f32 / self.cfg.height as f32;
-        let vp = Mat4::perspective_rh(FOV, aspect, 0.3, 1500.0) * Mat4::look_to_rh(eye, dir, Vec3::Y);
+        let vp = Mat4::perspective_rh(FOV, aspect, 0.3, 4000.0) * Mat4::look_to_rh(eye, dir, Vec3::Y);
         let m = vp.transpose();
         let (r0, r1, r2, r3) = (m.col(0), m.col(1), m.col(2), m.col(3));
         let planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2].map(|p| {
@@ -334,20 +322,14 @@ impl Phoenix {
         });
         let g = Globals {
             view_proj: vp.to_cols_array(),
-            cam: [eye.x, eye.y, eye.z, self.cfg.height as f32 / (2.0 * (FOV * 0.5).tan())],
+            cam: [ex, ey, ez, self.cfg.height as f32 / (2.0 * (FOV * 0.5).tan())],
             planes,
-            lod: [LOD_PX[0], LOD_PX[1], 2.6, self.n as f32],
+            misc: [self.n as f32, self.models as f32, self.lods as f32, 1.0],
             light: [0.5, 0.8, 0.3, 0.0],
         };
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
-        // Argumentos indirectos: contadores a 0 cada frame.
-        let mut a = [0u32; 15];
-        for (k, &(ic, fi, bv)) in self.lods.iter().enumerate() {
-            a[k * 5] = ic;
-            a[k * 5 + 2] = fi;
-            a[k * 5 + 3] = bv as u32;
-        }
-        self.queue.write_buffer(&self.args, 0, bytemuck::cast_slice(&a));
+        self.queue.write_buffer(&self.args, 0, bytemuck::cast_slice(&self.args0));
+        self.queue.write_buffer(&self.cur, 0, bytemuck::cast_slice(&self.zeros));
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -358,18 +340,22 @@ impl Phoenix {
         };
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
-        {
+        let groups = self.n.div_ceil(64);
+        let tw = |i: u32| self.ts.as_ref().map(|t| (&t.qs, i));
+        for (k, pl) in [&self.count_pl, &self.scan_pl, &self.scatter_pl].into_iter().enumerate() {
             let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
-                timestamp_writes: self.ts.as_ref().map(|t| wgpu::ComputePassTimestampWrites {
-                    query_set: &t.qs,
-                    beginning_of_pass_write_index: Some(0),
-                    end_of_pass_write_index: Some(1),
-                }),
+                timestamp_writes: tw(if k == 0 { 0 } else { 1 })
+                    .filter(|_| k != 1)
+                    .map(|(qs, i)| wgpu::ComputePassTimestampWrites {
+                        query_set: qs,
+                        beginning_of_pass_write_index: if k == 0 { Some(i) } else { None },
+                        end_of_pass_write_index: if k == 2 { Some(i) } else { None },
+                    }),
             });
-            p.set_pipeline(&self.cull_pl);
+            p.set_pipeline(pl);
             p.set_bind_group(0, &self.cull_bg, &[]);
-            p.dispatch_workgroups(self.n.div_ceil(64), 1, 1);
+            p.dispatch_workgroups(if k == 1 { 1 } else { groups }, 1, 1);
         }
         {
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -377,7 +363,7 @@ impl Phoenix {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view, depth_slice: None, resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.08, g: 0.07, b: 0.03, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.55, g: 0.62, b: 0.72, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -397,37 +383,51 @@ impl Phoenix {
             });
             p.set_pipeline(&self.draw_pl);
             p.set_bind_group(0, &self.draw_bg, &[]);
+            p.set_bind_group(1, &self.vis_bg, &[]);
             p.set_vertex_buffer(0, self.vbuf.slice(..));
-            p.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint16);
-            for k in 0..3 {
-                p.set_bind_group(1, &self.vis_bg[k], &[]);
-                p.draw_indexed_indirect(&self.args, k as u64 * 20);
+            p.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            for d in 0..(self.models * self.lods) as u64 {
+                p.draw_indexed_indirect(&self.args, d * 20);
             }
         }
         let read = self.frame % 20 == 0 && !self.busy.get();
+        let nd = (self.models * self.lods) as usize;
+        let ts_off = ((nd * 20 + 63) / 64 * 64) as u64;
         if read {
-            enc.copy_buffer_to_buffer(&self.args, 0, &self.staging, 0, 60);
+            enc.copy_buffer_to_buffer(&self.args, 0, &self.staging, 0, (nd * 20) as u64);
             if let Some(t) = &self.ts {
                 enc.resolve_query_set(&t.qs, 0..4, &t.resolve, 0);
-                enc.copy_buffer_to_buffer(&t.resolve, 0, &self.staging, 64, 32);
+                enc.copy_buffer_to_buffer(&t.resolve, 0, &self.staging, ts_off, 32);
             }
         }
         self.queue.submit([enc.finish()]);
         self.queue.present(frame);
         if read {
             self.busy.set(true);
-            let (busy, counts, st) = (self.busy.clone(), self.counts.clone(), self.staging.clone());
-            let (gpu, period, has_ts) = (self.gpu.clone(), self.ts.as_ref().map_or(0.0, |t| t.period), self.ts.is_some());
+            let (busy, stats, st) = (self.busy.clone(), self.stats.clone(), self.staging.clone());
+            let (tris, full) = (self.tris.clone(), self.full.clone());
+            let period = self.ts.as_ref().map(|t| t.period);
             self.staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
                 if r.is_ok() {
                     let d = st.slice(..).get_mapped_range().unwrap();
-                    let u: &[u32] = bytemuck::cast_slice(&d);
-                    counts.set([u[1], u[6], u[11]]);
-                    if has_ts {
-                        let t: &[u64] = bytemuck::cast_slice(&d[64..96]);
-                        let ms = |a: u64, b: u64| b.saturating_sub(a) as f32 * period * 1e-6;
-                        gpu.set([ms(t[0], t[1]), ms(t[2], t[3])]);
+                    let u: &[u32] = bytemuck::cast_slice(&d[..nd * 20]);
+                    let (mut vis, mut drawn, mut fullres, mut used) = (0f64, 0f64, 0f64, 0f64);
+                    for k in 0..nd {
+                        let c = u[k * 5 + 1] as f64;
+                        vis += c;
+                        drawn += c * tris[k] as f64;
+                        fullres += c * full[k] as f64;
+                        if c > 0.0 { used += 1.0; }
                     }
+                    let mut s = stats.get();
+                    s[..4].copy_from_slice(&[vis, drawn, fullres, used]);
+                    if let Some(p) = period {
+                        let t: &[u64] = bytemuck::cast_slice(&d[ts_off as usize..ts_off as usize + 32]);
+                        let ms = |a: u64, b: u64| b.saturating_sub(a) as f64 * p as f64 * 1e-6;
+                        s[4] = ms(t[0], t[1]);
+                        s[5] = ms(t[2], t[3]);
+                    }
+                    stats.set(s);
                     drop(d);
                     st.unmap();
                 }

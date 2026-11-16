@@ -11,17 +11,30 @@ Pensado primero para el juego Backrooms (`E:/backrooms`), pero sin depender de e
 - Sin tests salvo peticion, un commit por feature, nunca push sin permiso. Comentarios en espanol.
 - Vercel: solo estaticos. El `.wasm` se compila en local y se versiona/copia al cliente.
 
-## M0 (hecho): demo de culling + LOD en GPU
-`crates/phoenix`: N instancias de icosfera con 3 LOD (5120/320/80 tris), frustum culling y LOD por distancia en un compute shader, 3 `draw_indexed_indirect`. El CPU solo sube una matriz y los argumentos por frame. Contadores leidos con readback asincrono.
+## Estado
+**M0** (commits anteriores): culling y LOD de una malla en GPU, draws indirectos, timestamps de GPU.
 
-Medido en RTX (Lovelace), Chrome embebido, 1280x720: 2.000.000 instancias, ~6,6 M triangulos, 3 draws, ~0,24 ms de CPU de submit, 180 fps (tope de vsync).
+**M1 (demo avanzada):**
+- `phoenix-bake` (nativo): genera 8 modelos procedurales de 327.680 triangulos (`--sub 8` = 1,3 M) con relieve de fbm, 6 LOD por modelo con `meshopt` (simplificacion con error absoluto, orden de cache, bloques de vertices compactos), vertices de 12 B (pos snorm16 + normal octaedrica).
+- Runtime: LOD por error en pantalla (px) con la tabla de errores del bake, frustum culling, y generacion de draws en 3 pasadas de compute (count, scan, scatter). `first_instance` indirecto indexa un unico buffer de visibles. 48 draws indirectos por frame, constante.
+- Demo: `web/index.html` (piloto automatico; `F` = vuelo libre con WASD).
+
+Medido (RTX Lovelace, Chrome, 1280x720, vsync 180 Hz):
+
+| instancias | tris a resolucion completa | tris dibujados | GPU cull+render | CPU submit |
+|---|---|---|---|---|
+| 160 k | 6,0 G | 6,2 M | 0,53 ms | 0,25 ms |
+| 1 M | 35,5 G | 11,6 M | 1,5 ms | 0,26 ms |
+
+Los timestamps de Chrome se cuantizan, tomalos como orden de magnitud. No esta comparado todavia con el renderer three.js de Backrooms.
 
 ```
-cargo build --release --target wasm32-unknown-unknown
+cargo run --release -p phoenix-bake -- --sub 7 --models 8 --out web/assets   # una vez (web/assets esta en .gitignore)
+cargo build --release --target wasm32-unknown-unknown -p phoenix
 wasm-bindgen --target web --out-dir web/pkg target/wasm32-unknown-unknown/release/phoenix.wasm
-python -m http.server 5200 --directory web     # http://localhost:5200/?n=2000000
+python -m http.server 5200 --directory web     # http://localhost:5200/?n=1000000
 ```
 Requiere `wasm-bindgen-cli` 0.2.130 (`cargo install wasm-bindgen-cli --version 0.2.130`).
 
 ## Siguiente
-Mallas reales (glTF) en vez de icosferas, jerarquia de clusters (DAG de LOD) con `meshopt`, culling por oclusion (Hi-Z), materiales/texturas, sombras, post-proceso.
+Jerarquia de clusters (DAG de LOD por cluster) en vez de LOD por instancia, culling por oclusion (Hi-Z), cargar glTF reales, materiales/texturas, sombras, post-proceso, integracion en Las Suites y medir contra el renderer actual.

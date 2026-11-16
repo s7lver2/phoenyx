@@ -1,35 +1,71 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Phoenix M0</title>
+<title>Phoenix · demo avanzada</title>
 <style>html,body{margin:0;background:#000;overflow:hidden}canvas{width:100vw;height:100vh;display:block}
-#hud{position:fixed;left:8px;top:8px;color:#e8d98a;font:12px monospace;white-space:pre;text-shadow:0 0 2px #000}</style>
+#hud{position:fixed;left:10px;top:10px;color:#f1e7b8;font:12px/1.5 monospace;white-space:pre;text-shadow:0 0 3px #000,0 0 3px #000}
+#help{position:fixed;left:10px;bottom:10px;color:#f1e7b8;font:12px monospace;text-shadow:0 0 3px #000}</style>
 <canvas id="c"></canvas><div id="hud">cargando…</div>
+<div id="help">F: vuelo libre (clic para capturar el raton) · WASD + Espacio/Ctrl · Mayus = rapido · F de nuevo: piloto automatico</div>
 <script type="module">
 import init, { create } from "./pkg/phoenix.js";
+const hud = document.getElementById("hud");
+window.onunhandledrejection = (e) => { hud.textContent = "ERROR " + (e.reason && e.reason.message || e.reason); };
 const q = new URLSearchParams(location.search);
-const N = +(q.get("n") || 100000);
-const hud0=document.getElementById("hud");
-window.onunhandledrejection=e=>{hud0.textContent="ERROR "+(e.reason&&e.reason.message||e.reason)};
+const N = +(q.get("n") || 160000);
+const get = async (u, t) => { const r = await fetch(u); return t === "json" ? r.json() : new Uint8Array(await r.arrayBuffer()); };
+hud.textContent = "descargando modelos…";
+const [meta, verts, idx] = await Promise.all([get("assets/meta.json", "json"), get("assets/verts.bin"), get("assets/idx.bin")]);
 await init();
 const c = document.getElementById("c"), dpr = Math.min(devicePixelRatio, 2);
 const fit = () => { c.width = innerWidth * dpr; c.height = innerHeight * dpr; };
 fit();
-hud0.textContent="init ok, creando…";
-const p = await create(c, N);
-hud0.textContent="creado";
+hud.textContent = "creando escena…";
+const p = await create(c, verts, idx, new Float32Array(meta.info), new Uint32Array(meta.draws.flat()), meta.models, meta.lods, N);
 addEventListener("resize", () => { fit(); p.resize(c.width, c.height); });
-let last = performance.now(), ms = 0, cpu = 0, f = 0;
-const hud = document.getElementById("hud");
+
+// Camara: piloto automatico o vuelo libre.
+const ext = p.extent();
+const cam = { x: ext / 2, y: 40, z: ext / 2, yaw: 0, pitch: -0.18, free: false };
+const keys = {};
+addEventListener("keydown", (e) => { keys[e.code] = true; if (e.code === "KeyF") { cam.free = !cam.free; if (!cam.free) document.exitPointerLock(); } });
+addEventListener("keyup", (e) => { keys[e.code] = false; });
+c.addEventListener("click", () => { if (cam.free) c.requestPointerLock(); });
+addEventListener("mousemove", (e) => {
+  if (document.pointerLockElement !== c) return;
+  cam.yaw += e.movementX * 0.002;
+  cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch - e.movementY * 0.002));
+});
+
+let last = performance.now(), ms = 16, cpu = 0, f = 0, tPath = 0;
+const fmt = (x) => x >= 1e9 ? (x / 1e9).toFixed(2) + " G" : x >= 1e6 ? (x / 1e6).toFixed(2) + " M" : x >= 1e3 ? (x / 1e3).toFixed(1) + " k" : x.toFixed(0);
 const loop = (t) => {
+  const dt = Math.min((t - last) / 1000, 0.1);
+  if (cam.free) {
+    const sp = (keys.ShiftLeft ? 120 : 25) * dt;
+    const fx = Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
+    const mv = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0), st = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+    cam.x += (fx * mv - fz * st) * sp; cam.z += (fz * mv + fx * st) * sp;
+    cam.y += ((keys.Space ? 1 : 0) - (keys.ControlLeft ? 1 : 0)) * sp;
+  } else {
+    tPath += dt * 0.06;
+    const r = ext * 0.3;
+    cam.x = ext / 2 + r * Math.cos(tPath); cam.z = ext / 2 + r * Math.sin(tPath);
+    cam.y = 32 + 10 * Math.sin(tPath * 3); cam.yaw = tPath + Math.PI; cam.pitch = -0.16;
+  }
   const a = performance.now();
-  p.frame(t / 1000);
+  p.frame(cam.x, cam.y, cam.z, cam.yaw, cam.pitch);
   cpu = cpu * 0.95 + (performance.now() - a) * 0.05;
   ms = ms * 0.95 + (t - last) * 0.05; last = t;
   if (++f % 20 === 0) {
-    const k = p.counts(), g = p.gpu_ms();
-    hud.textContent = `instancias ${N}\nframe ${ms.toFixed(2)} ms (${(1000/ms).toFixed(0)} fps)\ncpu submit ${cpu.toFixed(3)} ms\nvisibles LOD0/1/2 ${k.join(" / ")}\ntriangulos ${(p.triangles()/1e6).toFixed(2)} M\ndraws 3
-gpu cull ${g[0]?.toFixed(2)} ms  render ${g[1]?.toFixed(2)} ms`;
-    window.__stats = { ms, cpu, counts: Array.from(k), tris: p.triangles(), gpu: Array.from(g) };
+    const s = Array.from(p.stats());
+    window.__stats = { ms, cpu, s };
+    hud.textContent =
+`PHOENIX · ${meta.models} modelos × ${meta.lods} LOD, ${fmt(meta.tris0)} tris/modelo a maxima resolucion
+instancias ${fmt(N)} · visibles ${fmt(s[0])} · draws con datos ${s[3]} de ${meta.models * meta.lods}
+triangulos de la escena a resolucion completa ${fmt(s[2])}
+triangulos realmente dibujados ${fmt(s[1])}  (${(s[2] / Math.max(s[1], 1)).toFixed(0)}x menos)
+frame ${ms.toFixed(2)} ms (${(1000 / ms).toFixed(0)} fps) · CPU submit ${cpu.toFixed(3)} ms
+GPU: culling ${s[4].toFixed(2)} ms · render ${s[5].toFixed(2)} ms`;
   }
   requestAnimationFrame(loop);
 };
