@@ -25,6 +25,7 @@ struct Globals {
     light: [f32; 4],
     inv_vp: [f32; 16],
     grid: [f32; 4],
+    prev_vp: [f32; 16],
     vw: [f32; 4],
 }
 
@@ -82,6 +83,11 @@ pub struct Phoenix {
     frame: u64,
     tau: f32,
     capacity: u32,
+    hiz: Hiz,
+    hiz_res: HizRes,
+    prev_vp: Mat4,
+    hiz_on: bool,
+    hiz_ready: bool,
     inst_buf: wgpu::Buffer,
     chunks: wgpu::Buffer,
     chunk_pl: wgpu::ComputePipeline,
@@ -122,6 +128,70 @@ struct Targets {
     bg_ao: wgpu::BindGroup,
     bg_down: Vec<wgpu::BindGroup>,
     bg_comp: wgpu::BindGroup,
+}
+
+/// Piramide Hi-Z (R32Float; nivel 0 = mitad de resolucion) y sus bind groups de generacion.
+struct Hiz {
+    #[allow(dead_code)]
+    all: wgpu::TextureView,
+    levels: Vec<wgpu::TextureView>,
+    gen_bg: Vec<wgpu::BindGroup>,
+    cull_bg: wgpu::BindGroup,
+}
+
+struct HizRes {
+    gen_l: wgpu::BindGroupLayout,
+    cull_l: wgpu::BindGroupLayout,
+    dummy: wgpu::TextureView,
+    pl0: wgpu::RenderPipeline,
+    pln: wgpu::RenderPipeline,
+}
+
+fn make_hiz(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, depth: &wgpu::TextureView, r: &HizRes) -> Hiz {
+    let (w0, h0) = (w.div_ceil(2).max(1), h.div_ceil(2).max(1));
+    let mips = 32 - w0.max(h0).leading_zeros();
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: w0, height: h0, depth_or_array_layers: 1 },
+        mip_level_count: mips, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let all = tex.create_view(&Default::default());
+    let levels: Vec<_> = (0..mips)
+        .map(|k| tex.create_view(&wgpu::TextureViewDescriptor { base_mip_level: k, mip_level_count: Some(1), ..Default::default() }))
+        .collect();
+    let gen_bg: Vec<_> = (0..mips as usize)
+        .map(|k| {
+            let src = if k == 0 { &r.dummy } else { &levels[k - 1] };
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None, layout: &r.gen_l,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(depth) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
+                ],
+            })
+        })
+        .collect();
+    let cull_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None, layout: &r.cull_l,
+        entries: &[wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&all) }],
+    });
+    // Inicializa a 1.0 (todo lejano) para que el primer frame no oculte nada.
+    let mut enc = device.create_command_encoder(&Default::default());
+    for v in &levels {
+        enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: v, depth_slice: None, resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }), store: wgpu::StoreOp::Store },
+            })],
+            ..Default::default()
+        });
+    }
+    queue.submit([enc.finish()]);
+    Hiz { all, levels, gen_bg, cull_bg }
 }
 
 /// Recursos de post-proceso que no dependen del tamano.
@@ -449,8 +519,16 @@ pub async fn create(
     let gnd_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &gnd_l, entries: &ge });
     drop(ge);
 
+    let utex = |binding, vis| wgpu::BindGroupLayoutEntry {
+        binding, visibility: vis, count: None,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+        },
+    };
+    let hiz_cull_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &[utex(1, S::COMPUTE)] });
     let cull_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None, bind_group_layouts: &[Some(&cull_l)], immediate_size: 0,
+        label: None, bind_group_layouts: &[Some(&cull_l), Some(&hiz_cull_l)], immediate_size: 0,
     });
     let cpl = |entry_point: &str| {
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -615,6 +693,55 @@ pub async fn create(
         period: queue.get_timestamp_period(),
     });
     let depth = depth_view(&device, w, h);
+    // Hi-Z
+    let hiz_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None, source: wgpu::ShaderSource::Wgsl(include_str!("hiz.wgsl").into()),
+    });
+    let hiz_gen_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: S::FRAGMENT, count: None,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+                },
+            },
+            utex(1, S::FRAGMENT),
+        ],
+    });
+    let hpl = |entry: &str| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None, bind_group_layouts: &[Some(&hiz_gen_l)], immediate_size: 0,
+            })),
+            vertex: wgpu::VertexState {
+                module: &hiz_module, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &hiz_module, entry_point: Some(entry), compilation_options: Default::default(),
+                targets: &[Some(wgpu::TextureFormat::R32Float.into())],
+            }),
+            primitive: Default::default(), depth_stencil: None,
+            multisample: Default::default(), multiview_mask: None, cache: None,
+        })
+    };
+    let hiz_res = HizRes {
+        dummy: device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R32Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+            })
+            .create_view(&Default::default()),
+        pl0: hpl("fs_hiz0"),
+        pln: hpl("fs_hizn"),
+        gen_l: hiz_gen_l,
+        cull_l: hiz_cull_l,
+    };
+    let hiz = make_hiz(&device, &queue, w, h, &depth, &hiz_res);
     // Post-proceso: AO en pantalla, bloom (4 reducciones) y composicion con ACES.
     let post_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None, source: wgpu::ShaderSource::Wgsl(include_str!("post.wgsl").into()),
@@ -704,7 +831,7 @@ pub async fn create(
     Ok(Phoenix {
         surface, cfg, device, queue, depth, tg, post, post_k: [0.05, 0.8, 0.6], globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
         cull_bg, draw_pl, bundle, cluster_pl, lux, sviews, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: n0, models, lods,
-        frame: 0, tau: 1.0, capacity: count, inst_buf, chunks, chunk_pl, dirty: true, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
+        frame: 0, tau: 1.0, capacity: count, hiz, hiz_res, prev_vp: Mat4::IDENTITY, hiz_on: true, hiz_ready: false, inst_buf, chunks, chunk_pl, dirty: true, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
         tris: Rc::new(tris), full: Rc::new(full),
     })
 }
@@ -717,6 +844,8 @@ impl Phoenix {
         self.surface.configure(&self.device, &self.cfg);
         self.depth = depth_view(&self.device, self.cfg.width, self.cfg.height);
         self.tg = make_targets(&self.device, self.cfg.width, self.cfg.height, &self.depth, &self.globals, &self.post);
+        self.hiz = make_hiz(&self.device, &self.queue, self.cfg.width, self.cfg.height, &self.depth, &self.hiz_res);
+        self.hiz_ready = false;
     }
 
     /// [visibles, tris dibujados, tris a resolucion completa, draws no vacios, cull ms, render ms]
@@ -758,6 +887,11 @@ impl Phoenix {
     /// Post-proceso: intensidad del bloom, fuerza del AO (0..1) y radio del AO en metros.
     pub fn set_post(&mut self, bloom: f32, ao: f32, radius: f32) {
         self.post_k = [bloom, ao, radius.max(0.05)];
+    }
+
+    /// Culling por oclusion con la piramide Hi-Z del frame anterior.
+    pub fn set_occlusion(&mut self, on: bool) {
+        self.hiz_on = on;
     }
 
     /// Activa o desactiva las sombras del sol (2 cascadas).
@@ -804,7 +938,8 @@ impl Phoenix {
             },
             inv_vp: vp.inverse().to_cols_array(),
             grid: [self.cfg.width as f32, self.cfg.height as f32, 0.3, 150.0],
-            vw: [0.0, 0.0, 0.0, self.lux.n_lights as f32],
+            prev_vp: self.prev_vp.to_cols_array(),
+            vw: [0.0, if self.hiz_on && self.hiz_ready { 1.0 } else { 0.0 }, 0.0, self.lux.n_lights as f32],
         };
         // Cascadas de sombras del sol (las calcula lux; phoenix las usa para el culling y el render).
         let shadows = self.flat && self.textured && self.lux.shadows_active();
@@ -852,6 +987,7 @@ impl Phoenix {
                     end_of_pass_write_index: Some(1),
                 }),
             });
+            p.set_bind_group(1, &self.hiz.cull_bg, &[]);
             if dirty {
                 p.set_pipeline(&self.chunk_pl);
                 p.set_bind_group(0, &self.cull_bg, &[]);
@@ -923,6 +1059,22 @@ impl Phoenix {
             }
             p.execute_bundles([&self.bundle]);
         }
+        // Hi-Z para el culling del frame siguiente.
+        for k in 0..self.hiz.levels.len() {
+            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.hiz.levels[k], depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            });
+            p.set_pipeline(if k == 0 { &self.hiz_res.pl0 } else { &self.hiz_res.pln });
+            p.set_bind_group(0, &self.hiz.gen_bg[k], &[]);
+            p.draw(0..3, 0..1);
+        }
+        self.prev_vp = vp;
+        self.hiz_ready = true;
         // Post-proceso: AO -> bloom (4 reducciones) -> composicion en la pantalla.
         self.queue.write_buffer(&self.post.pu, 0, bytemuck::cast_slice(&[self.lux.exposure, self.post_k[0], self.post_k[1], self.post_k[2]]));
         {

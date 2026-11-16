@@ -101,7 +101,7 @@ addEventListener("resize", () => { fit(); p.resize(c.width, c.height); });
 load.style.display = "none";
 
 // ---- Panel de iluminacion ----
-const S = { el: 37.7, az: 289.7, sun: 1, amb: 1, exp: 1, pl: 1, moon: 1, bloom: 0.05, ao: 0.6, aor: 0.6, tau: +(q.get("tau") || 1), shadows: q.get("shadows") !== "0", lights: true, pause: false };
+const S = { el: 37.7, az: 289.7, sun: 1, amb: 1, exp: 1, pl: 1, moon: 1, bloom: 0.05, ao: 0.6, aor: 0.6, tau: +(q.get("tau") || 1), shadows: q.get("shadows") !== "0", occ: q.get("occ") !== "0", lights: true, pause: false };
 let tSeq = 0;
 const sm = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
 const mixc = (a, b, k) => a.map((v, i) => v + (b[i] - v) * k);
@@ -117,6 +117,7 @@ const applyLight = () => {
   const mk = 0.6 * S.moon * (1 - sm(-0.14, 0.1, se));
   p.set_moon((S.az + 180) * Math.PI / 180, 0.6, 0.35 * mk, 0.5 * mk, 0.9 * mk);
   p.set_shadows(S.shadows);
+  p.set_occlusion(S.occ);
   p.set_tolerance(S.tau);
   const L = S.lights ? baseLights.map((v, i) => (i % 16 === 7 ? v * S.pl : v)) : [];
   p.set_lights(new Float32Array(L));
@@ -146,7 +147,7 @@ const chk = (key, name) => {
   r.onchange = () => { S[key] = r.checked; applyLight(); };
   ui.appendChild(l);
 };
-chk("shadows", "Sombras del sol"); chk("lights", "Luces");
+chk("shadows", "Sombras del sol"); chk("occ", "Oclusión (Hi-Z)"); chk("lights", "Luces");
 const tl = document.createElement("label");
 tl.innerHTML = 'Secuencia<input type="range" min="0" max="56" step="0.1"><output></output>';
 const tr = tl.querySelector("input"), to2 = tl.querySelector("output");

@@ -8,6 +8,7 @@ struct Globals {
   light: vec4<f32>,
   inv_vp: mat4x4<f32>,
   grid: vec4<f32>,         // ancho, alto de pantalla, near y far del clustering de luces
+  prev_vp: mat4x4<f32>,    // vista-proyeccion del frame anterior (Hi-Z)
   vw: vec4<f32>,           // x: vista ortografica (sombras), y: px por unidad (ortografica), z: sin fundido de LOD, w: n luces
 };
 
@@ -18,7 +19,38 @@ struct Globals {
 @group(0) @binding(3) var<storage, read_write> args: array<atomic<u32>>; // 5 u32 por draw
 @group(0) @binding(4) var<storage, read_write> cur: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> vis: array<u32>;
-@group(0) @binding(6) var<storage, read_write> chunks: array<vec4<f32>>;   // esfera (centro, radio) de cada grupo de 64 instancias
+@group(0) @binding(6) var<storage, read_write> chunks: array<vec4<f32>>;
+// Piramide Hi-Z del frame anterior (nivel 0 = mitad de resolucion; profundidad mas lejana por texel).
+@group(1) @binding(1) var hiz: texture_2d<f32>;   // esfera (centro, radio) de cada grupo de 64 instancias
+
+// Oclusion contra la piramide Hi-Z del frame anterior. Conservador: ante la duda, visible.
+fn occluded(c: vec3<f32>, r: f32) -> bool {
+  let clip = g.prev_vp * vec4<f32>(c, 1.0);
+  if (clip.w <= r + 0.3) { return false; }
+  let ndc = clip.xy / clip.w;
+  if (any(abs(ndc) > vec2<f32>(1.15))) { return false; }
+  let dims0 = vec2<f32>(textureDimensions(hiz, 0));
+  let size = dims0 * 2.0;                                        // resolucion de pantalla
+  let rpx = g.cam.w * r / clip.w;
+  let diam = max(rpx * 2.0, 1.0);
+  let nl = i32(textureNumLevels(hiz));
+  let lvl = clamp(i32(ceil(log2(diam))) - 1, 0, nl - 1);
+  let texel = exp2(f32(lvl + 1));                                // px de pantalla por texel del nivel
+  let ctr = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * size;
+  let lo = vec2<i32>(floor((ctr - vec2<f32>(rpx)) / texel));
+  let hi = vec2<i32>(floor((ctr + vec2<f32>(rpx)) / texel));
+  let ld = vec2<i32>(textureDimensions(hiz, lvl)) - vec2<i32>(1);
+  var m = 0.0;
+  for (var j = 0; j < 2; j++) {
+    for (var i = 0; i < 2; i++) {
+      let q = clamp(vec2<i32>(min(lo.x + i, hi.x), min(lo.y + j, hi.y)), vec2<i32>(0), ld);
+      m = max(m, textureLoad(hiz, q, lvl).r);
+    }
+  }
+  let zn = max(clip.w - r, 0.3);
+  let dn = (4000.0 / (4000.0 - 0.3)) * (1.0 - 0.3 / zn);
+  return dn > m + 0.0005;
+}
 
 // Seleccion de LOD con fundido: el nivel fino se dibuja siempre; si el siguiente nivel grueso esta
 // a punto de ser aceptable (error entre 1x y FADE_W x la tolerancia) tambien se emite el grueso y
@@ -41,6 +73,7 @@ fn pick(i: u32) -> Pick {
   let d = max(distance(a.xyz, g.cam.xyz), 0.001);
   let k = select(g.cam.w * r / d, g.vw.y * r, g.vw.x > 0.5);   // px por unidad de error del modelo
   if (2.0 * k < 1.0) { return o; }    // menor de 1 px: no se dibuja
+  if (g.vw.y > 0.5 && g.vw.x < 0.5 && occluded(a.xyz, r)) { return o; }
   let m = u32(b.x);
   let nl = u32(g.misc.z);
   var l = 0u;

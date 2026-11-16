@@ -8,6 +8,7 @@ struct Globals {
   light: vec4<f32>,
   inv_vp: mat4x4<f32>,
   grid: vec4<f32>,
+  prev_vp: mat4x4<f32>,
   vw: vec4<f32>,
 };
 struct PU { p: vec4<f32> };   // x exposicion, y bloom, z fuerza del AO, w radio del AO (m)
