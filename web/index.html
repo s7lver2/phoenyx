@@ -41,6 +41,14 @@ load.textContent = "creando escena…";
 const p = await create(c, verts, idx, new Float32Array(meta.info), new Uint32Array(meta.draws.flat()), meta.models, meta.lods, N + EXTRA, cine, tex.size, tex.mips, tex.layers, tb, tn, to, gr.size, gr.mips, gb, gn);
 p.set_tolerance(+(q.get("tau") || 1));
 window.__p = p;
+if (q.get("shadows") === "0") p.set_shadows(false);
+// Luces puntuales (culling por clusters en GPU): brasas junto a la estatua heroe y farolillos por el pasillo.
+{
+  const L = [];
+  for (const [x, y, z] of [[-3.5, 1.2, -3.5], [3.8, 1.0, -2.5], [0, 1.0, 4]]) L.push(x, y, z, 9, 1.0, 0.55, 0.25, 18);
+  for (let z = -120; z > -900; z -= 45) L.push(0, 1.5, z, 14, 1.0, 0.6, 0.3, 14);
+  p.set_lights(new Float32Array(L));
+}
 addEventListener("resize", () => { fit(); p.resize(c.width, c.height); });
 load.style.display = "none";
 

@@ -7,6 +7,8 @@ struct Globals {
   misc: vec4<f32>,         // n instancias, n modelos, n LOD, tolerancia de error (px)
   light: vec4<f32>,
   inv_vp: mat4x4<f32>,
+  grid: vec4<f32>,         // ancho, alto de pantalla, near y far del clustering de luces
+  vw: vec4<f32>,           // x: vista ortografica (sombras), y: px por unidad (ortografica), z: sin fundido de LOD, w: n luces
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -36,7 +38,7 @@ fn pick(i: u32) -> Pick {
     if (dot(g.planes[p].xyz, a.xyz) + g.planes[p].w < -r) { return o; }
   }
   let d = max(distance(a.xyz, g.cam.xyz), 0.001);
-  let k = g.cam.w * r / d;            // px por unidad de error del modelo
+  let k = select(g.cam.w * r / d, g.vw.y * r, g.vw.x > 0.5);   // px por unidad de error del modelo
   if (2.0 * k < 1.0) { return o; }    // menor de 1 px: no se dibuja
   let m = u32(b.x);
   let nl = u32(g.misc.z);
@@ -49,7 +51,7 @@ fn pick(i: u32) -> Pick {
   o.d0 = i32(m * nl + l);
   if (l + 1u < nl) {
     let ratio = lodinfo[m * 16u + 2u + l] * k / g.misc.w;   // error del nivel siguiente / tolerancia
-    if (ratio < FADE_W) {
+    if (ratio < FADE_W && g.vw.z < 0.5) {
       o.t = u32(clamp((FADE_W - ratio) / (FADE_W - 1.0), 0.0, 1.0) * 127.0);
       if (o.t > 0u) { o.d1 = o.d0 + 1; }
     }
@@ -90,6 +92,145 @@ fn scatter(@builtin(global_invocation_id) id: vec3<u32>) {
     let k = atomicAdd(&cur[u32(p.d1)], 1u);
     vis[off + k] = id.x | (p.t << 24u) | 0x80000000u;
   }
+}
+
+// ---- Luces en clusters (culling en GPU) y sombras del sol ----
+struct Sh {
+  vp: array<mat4x4<f32>, 2>,
+  split: vec4<f32>,   // profundidad de corte de cada cascada, w = sombras activas
+  sun: vec4<f32>,     // rgb radiancia del sol, w = escala del ambiente
+  texel: vec4<f32>,   // tamano de texel (m) de cada cascada, z = 1 / resolucion
+};
+@group(3) @binding(3) var shadow_t: texture_depth_2d_array;
+@group(3) @binding(4) var shadow_s: sampler_comparison;
+@group(3) @binding(5) var<uniform> sh: Sh;
+@group(3) @binding(6) var<storage, read> lights: array<vec4<f32>>;       // 2 vec4 por luz: (pos, radio), (color*intensidad, 0)
+@group(3) @binding(7) var<storage, read_write> cl: array<u32>;           // por cluster: n, indices (32 u32)
+
+const CX = 16u;
+const CY = 9u;
+const CZ = 24u;
+const NEAR = 0.3;
+const FAR = 4000.0;
+const PI = 3.14159265;
+
+@compute @workgroup_size(64)
+fn cluster_cull(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x >= CX * CY * CZ) { return; }
+  let cx = id.x % CX;
+  let cy = (id.x / CX) % CY;
+  let cz = id.x / (CX * CY);
+  let n0 = g.grid.z;
+  let f0 = g.grid.w;
+  let d0 = n0 * pow(f0 / n0, f32(cz) / f32(CZ));
+  let d1 = n0 * pow(f0 / n0, f32(cz + 1u) / f32(CZ));
+  let z0 = (FAR / (FAR - NEAR)) * (1.0 - NEAR / d0);
+  let z1 = (FAR / (FAR - NEAR)) * (1.0 - NEAR / d1);
+  let x0 = f32(cx) / f32(CX) * 2.0 - 1.0;
+  let x1 = f32(cx + 1u) / f32(CX) * 2.0 - 1.0;
+  let y0 = 1.0 - f32(cy + 1u) / f32(CY) * 2.0;
+  let y1 = 1.0 - f32(cy) / f32(CY) * 2.0;
+  var lo = vec3<f32>(1e30);
+  var hi = vec3<f32>(-1e30);
+  for (var i = 0u; i < 8u; i++) {
+    let p = g.inv_vp * vec4<f32>(select(x0, x1, (i & 1u) != 0u), select(y0, y1, (i & 2u) != 0u),
+                                  select(z0, z1, (i & 4u) != 0u), 1.0);
+    let w = p.xyz / p.w;
+    lo = min(lo, w);
+    hi = max(hi, w);
+  }
+  let base = id.x * 32u;
+  var cnt = 0u;
+  let nl = u32(g.vw.w);
+  for (var li = 0u; li < nl && cnt < 31u; li++) {
+    let a = lights[li * 2u];
+    let q = clamp(a.xyz, lo, hi);
+    let d = q - a.xyz;
+    if (dot(d, d) <= a.w * a.w) {
+      cl[base + 1u + cnt] = li;
+      cnt++;
+    }
+  }
+  cl[base] = cnt;
+}
+
+fn shadow_at(w: vec3<f32>, n: vec3<f32>, depth: f32) -> f32 {
+  if (sh.split.w < 0.5 || depth > sh.split.y) { return 1.0; }
+  let far = depth > sh.split.x;
+  let texel = select(sh.texel.x, sh.texel.y, far);
+  let wp = w + n * texel * 2.5;
+  let lp = sh.vp[select(0, 1, far)] * vec4<f32>(wp, 1.0);
+  let uv = vec2<f32>(lp.x * 0.5 + 0.5, 0.5 - lp.y * 0.5);
+  if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || lp.z > 1.0) { return 1.0; }
+  let layer = select(0, 1, far);
+  var s = 0.0;
+  for (var dy = -1; dy <= 1; dy++) {
+    for (var dx = -1; dx <= 1; dx++) {
+      s += textureSampleCompareLevel(shadow_t, shadow_s, uv + vec2<f32>(f32(dx), f32(dy)) * sh.texel.z, layer, lp.z - 0.0005);
+    }
+  }
+  return s / 9.0;
+}
+
+// BRDF Cook-Torrance (GGX + Smith + Schlick); devuelve color * N.L. Escalado por PI para
+// mantener el brillo de la iluminacion anterior (el difuso no se divide entre PI).
+fn brdf(l: vec3<f32>, rad: vec3<f32>, n: vec3<f32>, v: vec3<f32>, alb: vec3<f32>,
+        rough: f32, metal: f32, f0: vec3<f32>) -> vec3<f32> {
+  let nl = max(dot(n, l), 0.0);
+  if (nl <= 0.0) { return vec3<f32>(0.0); }
+  let h = normalize(l + v);
+  let nh = max(dot(n, h), 0.0);
+  let nv = max(dot(n, v), 1e-3);
+  let vh = max(dot(v, h), 0.0);
+  let a2 = rough * rough * rough * rough;
+  let dd = nh * nh * (a2 - 1.0) + 1.0;
+  let d = a2 / (PI * dd * dd);
+  let k = (rough + 1.0) * (rough + 1.0) / 8.0;
+  let gs = (nl / (nl * (1.0 - k) + k)) * (nv / (nv * (1.0 - k) + k));
+  let f = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vh, 5.0);
+  let spec = d * gs * f / (4.0 * nl * nv);
+  let kd = (vec3<f32>(1.0) - f) * (1.0 - metal);
+  return (kd * alb + spec * PI) * rad * nl;
+}
+
+fn lit_surface(wpos: vec3<f32>, n: vec3<f32>, view: vec3<f32>, alb: vec3<f32>, rough_in: f32,
+               metal: f32, ao: f32, frag: vec2<f32>, depth: f32) -> vec3<f32> {
+  let rough = clamp(rough_in, 0.06, 1.0);
+  let f0 = mix(vec3<f32>(0.04), alb, metal);
+  var col = brdf(g.light.xyz, sh.sun.rgb, n, view, alb, rough, metal, f0) * shadow_at(wpos, n, depth);
+  let amb = mix(vec3<f32>(0.30, 0.24, 0.17), vec3<f32>(0.42, 0.52, 0.72), n.y * 0.5 + 0.5) * sh.sun.w;
+  col += alb * (1.0 - metal) * amb * ao;
+  // Luces puntuales: solo las del cluster del fragmento.
+  let cx = min(u32(frag.x / g.grid.x * f32(CX)), CX - 1u);
+  let cy = min(u32(frag.y / g.grid.y * f32(CY)), CY - 1u);
+  let cz = u32(clamp(log(depth / g.grid.z) / log(g.grid.w / g.grid.z) * f32(CZ), 0.0, f32(CZ - 1u)));
+  let base = ((cz * CY + cy) * CX + cx) * 32u;
+  let cnt = cl[base];
+  for (var i = 0u; i < cnt; i++) {
+    let li = cl[base + 1u + i];
+    let a = lights[li * 2u];
+    let c = lights[li * 2u + 1u];
+    let d = a.xyz - wpos;
+    let d2 = dot(d, d);
+    let r = a.w;
+    if (d2 >= r * r) { continue; }
+    let dist = sqrt(d2);
+    let q = d2 / (r * r);
+    let win = clamp(1.0 - q * q, 0.0, 1.0);
+    col += brdf(d / dist, c.rgb * (win * win / (d2 + 0.5)), n, view, alb, rough, metal, f0);
+  }
+  return col;
+}
+
+// ---- Sombras: solo posicion ----
+@vertex
+fn vs_shadow(@location(0) p: vec4<f32>, @builtin(instance_index) ii: u32) -> @builtin(position) vec4<f32> {
+  let i = visr[ii] & 0x00FFFFFFu;
+  let a = inst[2u * i];
+  let b = inst[2u * i + 1u];
+  let c = cos(b.y);
+  let s = sin(b.y);
+  return g.view_proj * vec4<f32>(a.xyz + yaw(p.xyz, c, s) * a.w, 1.0);
 }
 
 // ---- Render ----
@@ -177,18 +318,12 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {
     let tt = normalize(v.t - n0 * dot(n0, v.t));
     let bb = cross(n0, tt) * v.bs;
     let nn = normalize(tt * nm.x + bb * nm.y + n0 * nm.z);
-    let l = g.light.xyz;
     let view = normalize(g.cam.xyz - v.wpos);
-    let diff = clamp(dot(nn, l) * 0.85 + 0.15, 0.0, 1.0);
-    let sunc = vec3<f32>(1.0, 0.92, 0.80) * 2.4;
-    let amb = mix(vec3<f32>(0.30, 0.24, 0.17), vec3<f32>(0.42, 0.52, 0.72), nn.y * 0.5 + 0.5) * 0.9;
-    let h = normalize(l + view);
-    let spec = pow(max(dot(nn, h), 0.0), mix(6.0, 90.0, 1.0 - orm.g)) * (1.0 - orm.g) * 0.35;
     // Contacto con el suelo: polvo y oscurecimiento en la base de rocas y estatuas.
     let gy = smoothstep(0.0, 0.8, v.wpos.y);
     let dust = vec3<f32>(0.40, 0.27, 0.15) * (1.0 - smoothstep(0.0, 0.45, v.wpos.y));
     let alb2 = mix(albedo, dust, 0.45 * (1.0 - smoothstep(0.0, 0.5, v.wpos.y)));
-    var lit = alb2 * (sunc * diff + amb) * orm.r * mix(0.55, 1.0, gy) + sunc * spec * diff * gy;
+    var lit = lit_surface(v.wpos, nn, view, alb2, orm.g, orm.b, orm.r * mix(0.55, 1.0, gy), v.pos.xy, 1.0 / v.pos.w);
     lit = vec3<f32>(1.0) - exp(-lit * 1.15);
     let fogt = clamp(v.dist / 2500.0, 0.0, 1.0);
     let hazel = pow(vec3<f32>(0.80, 0.77, 0.71), vec3<f32>(2.2));
@@ -257,11 +392,8 @@ fn fs_ground(v: GOut) -> @location(0) vec4<f32> {
     let n2 = textureSample(gnorm, gsamp, uv2, 0);
     let nm = normalize((mix(n1.xyz, n2.xyz, mixk)) * 2.0 - 1.0);
     let nn = normalize(vec3<f32>(nm.x, nm.z, -nm.y));
-    let l = g.light.xyz;
-    let diff = clamp(dot(nn, l) * 0.9 + 0.1, 0.0, 1.0);
-    let sunc = vec3<f32>(1.0, 0.92, 0.80) * 2.4;
-    let amb = vec3<f32>(0.40, 0.46, 0.60) * 0.8;
-    var lit = alb * (sunc * diff + amb);
+    let view = normalize(g.cam.xyz - v.w);
+    var lit = lit_surface(v.w, nn, view, alb, 0.9, 0.0, 1.0, v.pos.xy, 1.0 / v.pos.w);
     lit = vec3<f32>(1.0) - exp(-lit * 1.15);
     let hazel = pow(vec3<f32>(0.80, 0.77, 0.71), vec3<f32>(2.2));
     return vec4<f32>(pow(mix(lit, hazel, fog * fog), vec3<f32>(1.0 / 2.2)), 1.0);
