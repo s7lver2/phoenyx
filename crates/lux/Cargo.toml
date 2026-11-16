@@ -1,0 +1,10 @@
+[package]
+name = "lux"
+version = "0.0.1"
+edition = "2024"
+description = "Lux: iluminacion en GPU (PBR, sombras en cascadas, luces con clustering) para wgpu/WebGPU"
+
+[dependencies]
+wgpu = { version = "30.0.2", default-features = false, features = ["wgsl"] }
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.30"

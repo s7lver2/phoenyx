@@ -4,17 +4,14 @@
 //! (count -> scan -> scatter). La CPU solo sube la camara y encola draws indirectos.
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
+use lux::Lux;
 use std::{cell::Cell, rc::Rc};
 use wasm_bindgen::prelude::*;
 use wgpu::util::DeviceExt;
 
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const FOV: f32 = 1.1;
-const SH_RES: u32 = 2048;
-const MAX_LIGHTS: u32 = 512;
-const CLUSTERS: u32 = 16 * 9 * 24;
-/// Radios (m) de las dos cascadas de sombras del sol, alrededor de la camara.
-const CASCADES: [f32; 2] = [25.0, 130.0];
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -29,15 +26,6 @@ struct Globals {
     vw: [f32; 4],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct ShU {
-    vp: [[f32; 16]; 2],
-    split: [f32; 4],
-    sun: [f32; 4],
-    texel: [f32; 4],
-}
-
 /// Una vista de sombras: su propio culling GPU (count/scan/scatter) y su cola de draws.
 struct SView {
     globals: wgpu::Buffer,
@@ -45,7 +33,6 @@ struct SView {
     cur: wgpu::Buffer,
     cull_bg: wgpu::BindGroup,
     bundle: wgpu::RenderBundle,
-    layer: wgpu::TextureView,
 }
 
 struct Ts {
@@ -72,14 +59,8 @@ pub struct Phoenix {
     cull_bg: wgpu::BindGroup,
     draw_pl: wgpu::RenderPipeline,
     cluster_pl: wgpu::ComputePipeline,
-    lights_buf: wgpu::Buffer,
-    sh_buf: wgpu::Buffer,
+    lux: Lux,
     sviews: Vec<SView>,
-    nlights: u32,
-    sun: [f32; 4],
-    sh_on: bool,
-    sun_dir: Vec3,
-    exposure: f32,
     /// Los draws indirectos no cambian entre frames: se graban una sola vez.
     bundle: wgpu::RenderBundle,
     draw_bg: wgpu::BindGroup,
@@ -354,7 +335,8 @@ pub async fn create(
     });
 
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: None, source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        label: None, source: wgpu::ShaderSource::Wgsl(format!("{}
+{}", lux::WGSL, include_str!("shader.wgsl")).into()),
     });
     use wgpu::{BufferBindingType as B, ShaderStages as S};
     let uni = |vis| wgpu::BindGroupLayoutEntry {
@@ -438,75 +420,25 @@ pub async fn create(
     let gtv = |fmt, data: &[u8]| make_tex(&device, &queue, gs, gm, 1, fmt, if gnd_ok { data } else { &dummy });
     let g_base = gtv(wgpu::TextureFormat::Rgba8UnormSrgb, ground_base);
     let g_norm = gtv(wgpu::TextureFormat::Rgba8Unorm, ground_norm);
-    // Grupo 3: suelo + sombras + luces (compartido por suelo y por el pase principal y el clustering).
-    let sh_tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: None,
-        size: wgpu::Extent3d { width: SH_RES, height: SH_RES, depth_or_array_layers: 2 },
-        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: DEPTH,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let sh_view = sh_tex.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default()
-    });
-    let sh_layer = |i: u32| sh_tex.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: i, array_layer_count: Some(1),
-        ..Default::default()
-    });
-    let cmp = device.create_sampler(&wgpu::SamplerDescriptor {
-        mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
-        compare: Some(wgpu::CompareFunction::LessEqual), ..Default::default()
-    });
-    let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None, size: (MAX_LIGHTS * 32) as u64, mapped_at_creation: false,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-    let cl_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None, size: (CLUSTERS * 32 * 4) as u64, mapped_at_creation: false,
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let sh_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None, size: size_of::<ShU>() as u64, mapped_at_creation: false,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
-    let gnd_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: None,
-        entries: &[
-            tex_entry(0), tex_entry(1),
-            wgpu::BindGroupLayoutEntry {
-                binding: 2, visibility: S::FRAGMENT, count: None,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3, visibility: S::FRAGMENT, count: None,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Depth,
-                    view_dimension: wgpu::TextureViewDimension::D2Array,
-                    multisampled: false,
-                },
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 4, visibility: S::FRAGMENT, count: None,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-            },
-            entry(B::Uniform, 5, S::FRAGMENT),
-            entry(ro, 6, S::FRAGMENT | S::COMPUTE),
-            entry(rw, 7, S::FRAGMENT | S::COMPUTE),
-        ],
-    });
-    let gnd_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None, layout: &gnd_l,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&g_base) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&g_norm) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&sh_view) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&cmp) },
-            wgpu::BindGroupEntry { binding: 5, resource: sh_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 6, resource: lights_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 7, resource: cl_buf.as_entire_binding() },
-        ],
-    });
+    // Grupo 3: suelo (bindings 0..=2) + iluminacion de lux (bindings 3..=7).
+    let lux = Lux::new(&device);
+    let mut gl = vec![
+        tex_entry(0), tex_entry(1),
+        wgpu::BindGroupLayoutEntry {
+            binding: 2, visibility: S::FRAGMENT, count: None,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        },
+    ];
+    gl.extend(Lux::layout_entries());
+    let gnd_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &gl });
+    let mut ge = vec![
+        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&g_base) },
+        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&g_norm) },
+        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+    ];
+    ge.extend(lux.bind_entries());
+    let gnd_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &gnd_l, entries: &ge });
+    drop(ge);
 
     let cull_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None, bind_group_layouts: &[Some(&cull_l)], immediate_size: 0,
@@ -623,7 +555,7 @@ pub async fn create(
         }),
         multisample: Default::default(), multiview_mask: None, cache: None,
     });
-    let mk_view = |layer: u32| -> SView {
+    let mk_view = |_layer: u32| -> SView {
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: None, size: size_of::<Globals>() as u64, mapped_at_creation: false,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -660,7 +592,7 @@ pub async fn create(
             b.draw_indexed_indirect(&args, d * 20);
         }
         let bundle = b.finish(&wgpu::RenderBundleDescriptor { label: None });
-        SView { globals, args, cur, cull_bg, bundle, layer: sh_layer(layer) }
+        SView { globals, args, cur, cull_bg, bundle }
     };
     let sviews: Vec<SView> = (0..2).map(mk_view).collect();
 
@@ -697,9 +629,7 @@ pub async fn create(
     };
     Ok(Phoenix {
         surface, cfg, device, queue, depth, globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
-        cull_bg, draw_pl, bundle, cluster_pl, lights_buf, sh_buf, sviews, nlights: 0,
-        sun: [2.4, 2.2, 1.92, 0.9], sh_on: true,
-        sun_dir: Vec3::new(-0.7, 0.55, -0.25).normalize(), exposure: 1.0, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
+        cull_bg, draw_pl, bundle, cluster_pl, lux, sviews, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
         frame: 0, tau: 1.0, spacing, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
         tris: Rc::new(tris), full: Rc::new(full),
     })
@@ -724,37 +654,35 @@ impl Phoenix {
         self.tau = px;
     }
 
-    /// Luces puntuales: 8 floats por luz (x, y, z, radio, r, g, b, intensidad). Maximo 512.
+    /// Luces (16 floats cada una, ver `lux::LIGHT_STRIDE`): puntuales, focos y tubos. Maximo 512.
     /// El culling por clusters y el sombreado ocurren en la GPU; esto solo sube el buffer.
     pub fn set_lights(&mut self, data: &[f32]) {
-        let n = ((data.len() / 8) as u32).min(MAX_LIGHTS);
-        let mut v = Vec::with_capacity(n as usize * 8);
-        for l in data.chunks_exact(8).take(n as usize) {
-            v.extend_from_slice(&[l[0], l[1], l[2], l[3], l[4] * l[7], l[5] * l[7], l[6] * l[7], 0.0]);
-        }
-        self.queue.write_buffer(&self.lights_buf, 0, bytemuck::cast_slice(&v));
-        self.nlights = n;
+        self.lux.set_lights(&self.queue, data);
     }
 
     /// Sol: radiancia (r, g, b) y escala de la luz ambiente.
     pub fn set_sun(&mut self, r: f32, g: f32, b: f32, ambient: f32) {
-        self.sun = [r, g, b, ambient];
+        self.lux.sun = [r, g, b, ambient];
     }
 
-    /// Direccion del sol: azimut y elevacion en radianes (elevacion maxima 88 grados).
+    /// Direccion del sol: azimut y elevacion en radianes.
     pub fn set_sun_dir(&mut self, az: f32, el: f32) {
-        let el = el.clamp(-0.5, 1.53);
-        self.sun_dir = Vec3::new(el.cos() * az.sin(), el.sin(), -el.cos() * az.cos()).normalize();
+        self.lux.set_sun_dir(az, el);
+    }
+
+    /// Luna: direccion y color (sin sombras); 0 la apaga.
+    pub fn set_moon(&mut self, az: f32, el: f32, r: f32, g: f32, b: f32) {
+        self.lux.set_moon(az, el, [r, g, b]);
     }
 
     /// Exposicion del mapeo de tonos.
     pub fn set_exposure(&mut self, e: f32) {
-        self.exposure = e;
+        self.lux.exposure = e;
     }
 
     /// Activa o desactiva las sombras del sol (2 cascadas).
     pub fn set_shadows(&mut self, on: bool) {
-        self.sh_on = on;
+        self.lux.shadows = on;
     }
 
     /// Ancho y alto de la rejilla de instancias en metros.
@@ -767,64 +695,42 @@ impl Phoenix {
         let dir = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos());
         let aspect = self.cfg.width as f32 / self.cfg.height as f32;
         let vp = Mat4::perspective_rh(FOV, aspect, 0.3, 4000.0) * Mat4::look_to_rh(eye, dir, Vec3::Y);
-        let m = vp.transpose();
-        let (r0, r1, r2, r3) = (m.col(0), m.col(1), m.col(2), m.col(3));
-        let planes_of = |vp: Mat4| {
-            let m = vp.transpose();
-            let (r0, r1, r2, r3) = (m.col(0), m.col(1), m.col(2), m.col(3));
-            [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2].map(|p| {
-                let l = p.truncate().length();
-                (p / l).to_array()
-            })
-        };
-        let planes = planes_of(vp);
-        let _ = (r0, r1, r2, r3);
+        let planes = lux::planes_of(vp);
         let g = Globals {
             view_proj: vp.to_cols_array(),
             cam: [ex, ey, ez, self.cfg.height as f32 / (2.0 * (FOV * 0.5).tan())],
             planes,
             misc: [self.n as f32, self.models as f32, self.lods as f32, self.tau],
             light: if self.flat {
-                let l = self.sun_dir;
+                let l = self.lux.sun_dir;
                 [l.x, l.y, l.z, if self.textured { 2.0 } else { 1.0 }]
             } else {
                 [0.5, 0.8, 0.3, 0.0]
             },
             inv_vp: vp.inverse().to_cols_array(),
             grid: [self.cfg.width as f32, self.cfg.height as f32, 0.3, 150.0],
-            vw: [0.0, 0.0, 0.0, self.nlights as f32],
+            vw: [0.0, 0.0, 0.0, self.lux.n_lights as f32],
         };
-        // Cascadas de sombras del sol: cajas ortograficas alineadas a la luz, ajustadas al texel.
-        let shadows = self.flat && self.textured && self.sh_on && self.sun_dir.y > 0.03;
-        let mut shu = ShU::zeroed();
-        shu.sun = self.sun;
-        shu.texel[3] = self.exposure;
+        // Cascadas de sombras del sol (las calcula lux; phoenix las usa para el culling y el render).
+        let shadows = self.flat && self.textured && self.lux.shadows_active();
         if shadows {
-            let sun_l = self.sun_dir;
-            let lview = Mat4::look_to_rh(Vec3::ZERO, -sun_l, Vec3::Y);
-            for (i, rr) in CASCADES.into_iter().enumerate() {
-                let c = lview.transform_point3(eye + dir * rr * 0.5);
-                let texel = 2.0 * rr / SH_RES as f32;
-                let (cx, cy) = ((c.x / texel).floor() * texel, (c.y / texel).floor() * texel);
-                let proj = Mat4::orthographic_rh(cx - rr, cx + rr, cy - rr, cy + rr, -c.z - 300.0, -c.z + rr * 1.3);
-                let svp = proj * lview;
+            let casc = self.lux.fit_cascades(eye, dir);
+            for (i, c) in casc.iter().enumerate() {
                 let mut gc = g;
-                gc.view_proj = svp.to_cols_array();
-                gc.planes = planes_of(svp);
-                gc.inv_vp = svp.inverse().to_cols_array();
+                gc.view_proj = c.view_proj.to_cols_array();
+                gc.planes = lux::planes_of(c.view_proj);
+                gc.inv_vp = c.view_proj.inverse().to_cols_array();
                 gc.misc[3] = 1.5;
-                gc.vw = [1.0, SH_RES as f32 / (2.0 * rr), 1.0, 0.0];
+                gc.vw = [1.0, lux::SHADOW_RES as f32 / (2.0 * c.radius), 1.0, 0.0];
                 let sv = &self.sviews[i];
                 self.queue.write_buffer(&sv.globals, 0, bytemuck::bytes_of(&gc));
                 self.queue.write_buffer(&sv.args, 0, bytemuck::cast_slice(&self.args0));
                 self.queue.write_buffer(&sv.cur, 0, bytemuck::cast_slice(&self.zeros));
-                shu.vp[i] = svp.to_cols_array();
-                shu.texel[i] = texel;
             }
-            shu.split = [CASCADES[0] * 1.2, CASCADES[1] * 1.2, 0.0, 1.0];
-            shu.texel[2] = 1.0 / SH_RES as f32;
+            self.lux.write_uniform(&self.queue, Some(&casc));
+        } else {
+            self.lux.write_uniform(&self.queue, None);
         }
-        self.queue.write_buffer(&self.sh_buf, 0, bytemuck::bytes_of(&shu));
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         self.queue.write_buffer(&self.args, 0, bytemuck::cast_slice(&self.args0));
         self.queue.write_buffer(&self.cur, 0, bytemuck::cast_slice(&self.zeros));
@@ -858,20 +764,20 @@ impl Phoenix {
                     p.dispatch_workgroups(if k == 1 { 1 } else { groups }, 1, 1);
                 }
             }
-            if self.nlights > 0 {
+            if self.lux.n_lights > 0 {
                 p.set_pipeline(&self.cluster_pl);
                 p.set_bind_group(0, &self.cull_bg, &[]);
                 p.set_bind_group(3, &self.gnd_bg, &[]);
-                p.dispatch_workgroups(CLUSTERS.div_ceil(64), 1, 1);
+                p.dispatch_workgroups(Lux::cluster_groups(), 1, 1);
             }
         }
         if shadows {
-            for sv in &self.sviews {
+            for (i, sv) in self.sviews.iter().enumerate() {
                 let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: None,
                     color_attachments: &[],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &sv.layer,
+                        view: self.lux.layer(i),
                         depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
                         stencil_ops: None,
                     }),
