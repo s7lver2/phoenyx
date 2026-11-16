@@ -258,7 +258,13 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {
     let nm = textureSample(tnorm, tsamp, v.uv, v.layer).xyz * 2.0 - 1.0;
     let orm = textureSample(torm, tsamp, v.uv, v.layer).rgb;
     let n0 = normalize(v.n);
-    let tt = normalize(v.t - n0 * dot(n0, v.t));
+    // Tangente ortogonalizada; si degenera (modelos sin tangentes), se elige un eje cualquiera.
+    var tt = v.t - n0 * dot(n0, v.t);
+    if (dot(tt, tt) < 1e-4) {
+      let ax = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), abs(n0.x) > 0.7);
+      tt = ax - n0 * dot(n0, ax);
+    }
+    tt = normalize(tt);
     let bb = cross(n0, tt) * v.bs;
     let nn = normalize(tt * nm.x + bb * nm.y + n0 * nm.z);
     let view = normalize(g.cam.xyz - v.wpos);

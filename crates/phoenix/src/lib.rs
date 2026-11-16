@@ -92,6 +92,7 @@ pub struct Phoenix {
     hiz_ready: bool,
     min_px: f32,
     far_tol: f32,
+    env_on: bool,
     inst_buf: wgpu::Buffer,
     chunks: wgpu::Buffer,
     chunk_pl: wgpu::ComputePipeline,
@@ -697,7 +698,7 @@ pub async fn create(
         let bundle = b.finish(&wgpu::RenderBundleDescriptor { label: None });
         SView { globals, args, cur, cull_bg, bundle }
     };
-    let sviews: Vec<SView> = (0..2).map(mk_view).collect();
+    let sviews: Vec<SView> = (0..lux::SHADOW_LAYERS).map(mk_view).collect();
 
     let ts = device.features().contains(wgpu::Features::TIMESTAMP_QUERY).then(|| Ts {
         qs: device.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty: wgpu::QueryType::Timestamp, count: 8 }),
@@ -846,7 +847,7 @@ pub async fn create(
     Ok(Phoenix {
         surface, cfg, device, queue, depth, tg, post, post_k: [0.05, 0.8, 0.6], globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
         cull_bg, draw_pl, bundle, cluster_pl, lux, sviews, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: n0, models, lods,
-        frame: 0, tau: 1.0, capacity: count, hiz, hiz_res, prev_vp: Mat4::IDENTITY, hiz_on: true, hiz_ready: false, min_px: 1.0, far_tol: 0.6, inst_buf, chunks, chunk_pl, dirty: true, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 8])), ts,
+        frame: 0, tau: 1.0, capacity: count, hiz, hiz_res, prev_vp: Mat4::IDENTITY, hiz_on: true, hiz_ready: false, min_px: 1.0, far_tol: 0.6, env_on: true, inst_buf, chunks, chunk_pl, dirty: true, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 8])), ts,
         tris: Rc::new(tris), full: Rc::new(full),
     })
 }
@@ -927,6 +928,16 @@ impl Phoenix {
         self.far_tol = k.max(0.0);
     }
 
+    /// Dibuja (o no) el cielo y el suelo de entorno; desactivalo en interiores.
+    pub fn set_environment(&mut self, on: bool) {
+        self.env_on = on;
+    }
+
+    /// Ambiente plano (interiores): sustituye al ambiente por hora del dia. `scale` = 0 lo desactiva.
+    pub fn set_flat_ambient(&mut self, r: f32, g: f32, b: f32, scale: f32) {
+        self.lux.flat_ambient = if scale > 0.0 { Some([r * scale, g * scale, b * scale]) } else { None };
+    }
+
     /// Culling por oclusion con la piramide Hi-Z del frame anterior.
     pub fn set_occlusion(&mut self, on: bool) {
         self.hiz_on = on;
@@ -981,9 +992,11 @@ impl Phoenix {
             tune: [self.min_px, self.far_tol, 0.0, 0.0],
         };
         // Cascadas de sombras del sol (las calcula lux; phoenix las usa para el culling y el render).
+        // Vistas de sombras activas: cascadas del sol (capas 0 y 1) y focos con sombra (capas 2..=5).
         let shadows = self.flat && self.textured && self.lux.shadows_active();
-        if shadows {
-            let casc = self.lux.fit_cascades(eye, dir);
+        let mut active: Vec<usize> = vec![];
+        let casc = if shadows { Some(self.lux.fit_cascades(eye, dir)) } else { None };
+        if let Some(casc) = &casc {
             for (i, c) in casc.iter().enumerate() {
                 let mut gc = g;
                 gc.view_proj = c.view_proj.to_cols_array();
@@ -996,11 +1009,27 @@ impl Phoenix {
                 self.queue.write_buffer(&sv.globals, 0, bytemuck::bytes_of(&gc));
                 self.queue.write_buffer(&sv.args, 0, bytemuck::cast_slice(&self.args0));
                 self.queue.write_buffer(&sv.cur, 0, bytemuck::cast_slice(&self.zeros));
+                active.push(i);
             }
-            self.lux.write_uniform(&self.queue, Some(&casc));
-        } else {
-            self.lux.write_uniform(&self.queue, None);
         }
+        let spots = if self.textured { self.lux.update_shadow_spots(&self.queue, eye) } else { vec![] };
+        for sp in &spots {
+            let mut gc = g;
+            gc.view_proj = sp.view_proj.to_cols_array();
+            gc.planes = lux::planes_of(sp.view_proj);
+            gc.inv_vp = sp.view_proj.inverse().to_cols_array();
+            gc.cam = [sp.pos.x, sp.pos.y, sp.pos.z, lux::SHADOW_RES as f32 / (2.0 * (sp.fov * 0.5).tan())];
+            gc.misc[3] = 1.5;
+            gc.tune = [1.0, 0.0, 0.0, 0.0];
+            gc.vw = [0.0, 0.0, 1.0, 0.0];
+            let k = 2 + sp.slot;
+            let sv = &self.sviews[k];
+            self.queue.write_buffer(&sv.globals, 0, bytemuck::bytes_of(&gc));
+            self.queue.write_buffer(&sv.args, 0, bytemuck::cast_slice(&self.args0));
+            self.queue.write_buffer(&sv.cur, 0, bytemuck::cast_slice(&self.zeros));
+            active.push(k);
+        }
+        self.lux.write_uniform(&self.queue, casc.as_ref(), &spots);
         self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         self.queue.write_buffer(&self.args, 0, bytemuck::cast_slice(&self.args0));
         self.queue.write_buffer(&self.cur, 0, bytemuck::cast_slice(&self.zeros));
@@ -1033,7 +1062,7 @@ impl Phoenix {
                 p.set_bind_group(0, &self.cull_bg, &[]);
                 p.dispatch_workgroups(self.n.div_ceil(64).div_ceil(64).max(1), 1, 1);
             }
-            let views = std::iter::once(&self.cull_bg).chain(self.sviews.iter().take(if shadows { 2 } else { 0 }).map(|v| &v.cull_bg));
+            let views = std::iter::once(&self.cull_bg).chain(active.iter().map(|&k| &self.sviews[k].cull_bg));
             for bg in views {
                 p.set_bind_group(0, bg, &[]);
                 for (k, pl) in [&self.count_pl, &self.scan_pl, &self.scatter_pl].into_iter().enumerate() {
@@ -1048,20 +1077,21 @@ impl Phoenix {
                 p.dispatch_workgroups(Lux::cluster_groups(), 1, 1);
             }
         }
-        if shadows {
-            for (i, sv) in self.sviews.iter().enumerate() {
+        if !active.is_empty() {
+            for (n, &k) in active.iter().enumerate() {
+                let sv = &self.sviews[k];
                 let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: None,
                     color_attachments: &[],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: self.lux.layer(i),
+                        view: self.lux.layer(k),
                         depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
                         stencil_ops: None,
                     }),
-                    timestamp_writes: self.ts.as_ref().map(|t| wgpu::RenderPassTimestampWrites {
+                    timestamp_writes: self.ts.as_ref().filter(|_| n == 0 || n + 1 == active.len()).map(|t| wgpu::RenderPassTimestampWrites {
                         query_set: &t.qs,
-                        beginning_of_pass_write_index: if i == 0 { Some(4) } else { None },
-                        end_of_pass_write_index: if i == 1 { Some(5) } else { None },
+                        beginning_of_pass_write_index: if n == 0 { Some(4) } else { None },
+                        end_of_pass_write_index: if n + 1 == active.len() { Some(5) } else { None },
                     }),
                     ..Default::default()
                 });
@@ -1093,7 +1123,7 @@ impl Phoenix {
                 ..Default::default()
             });
             p.set_bind_group(3, &self.gnd_bg, &[]);
-            if self.flat {
+            if self.flat && self.env_on {
                 p.set_pipeline(&self.sky_pl);
                 p.set_bind_group(0, &self.draw_bg, &[]);
                 p.draw(0..3, 0..1);

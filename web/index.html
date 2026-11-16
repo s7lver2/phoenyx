@@ -206,7 +206,7 @@ const caption = (t, s) => {
 let lastCap = null;
 let last = performance.now(), t0 = last, ms = 16, cpu = 0, f = 0, s = [0, 0, 0, 0, 0, 0], path0 = 0;
 const loop = (now) => {
-  const dt = Math.min((now - last) / 1000, 0.1);
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
   if (!S.pause) tSeq += dt;
   const t = tSeq % SEQ;
   if (!S.pause) tr.value = t;

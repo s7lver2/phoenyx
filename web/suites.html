@@ -1,0 +1,156 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Phoenix · interior tipo Las Suites</title>
+<style>
+html,body{margin:0;background:#000;overflow:hidden}
+canvas{width:100vw;height:100vh;display:block}
+#hud{position:fixed;left:10px;top:10px;color:#f1e7b8;font:12px/1.5 monospace;white-space:pre;text-shadow:0 0 3px #000,0 0 3px #000}
+#help{position:fixed;left:10px;bottom:10px;color:#f1e7b8;font:12px monospace;text-shadow:0 0 3px #000,0 0 3px #000;opacity:.7}
+#ui{position:fixed;right:10px;top:10px;width:230px;color:#f1e7b8;font:11px/1.4 monospace;background:rgba(14,13,9,.78);padding:8px 10px;border:1px solid #4a4528}
+#ui label{display:grid;grid-template-columns:90px 1fr 36px;gap:6px;align-items:center;margin:3px 0}
+#ui label.chk{grid-template-columns:auto 1fr}
+#ui output{text-align:right;color:#bfb57a}
+#ui input[type=range]{width:100%;accent-color:#e9e27a}
+#load{position:fixed;inset:0;display:grid;place-items:center;color:#f1e7b8;font:14px monospace;background:#000}
+</style>
+<canvas id="c"></canvas><div id="hud"></div><div id="ui"></div><div id="load">cargando…</div>
+<div id="help">F: automatico / vuelo libre (clic = capturar raton, WASD, Mayus rapido) · U: panel</div>
+<script type="module">
+import { supported, loadPackage, createEngine, light, watch } from "./phoenix.js";
+const load = document.getElementById("load"), hud = document.getElementById("hud"), ui = document.getElementById("ui");
+const q = new URLSearchParams(location.search);
+const W = +(q.get("size") || 200), H = W, CELL = 1.5, HEIGHT = 2.7;
+if (!(await supported())) { load.textContent = "Sin WebGPU con indirect-first-instance."; throw new Error("sin WebGPU"); }
+const pkg = await loadPackage(q.get("assets") || "assets-suites");
+const info = new Float32Array(pkg.meta.info);
+const off = (m) => info[m * 16 + 13];
+
+// ---- Laberinto (DFS iterativo con semilla): una pared por arista cerrada entre celdas ----
+let seed = 12345; const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+const openE = new Uint8Array(W * H), openS = new Uint8Array(W * H), seen = new Uint8Array(W * H);
+const parent = new Int32Array(W * H).fill(-1);
+{
+  const st = [0]; seen[0] = 1;
+  while (st.length) {
+    const c = st[st.length - 1], x = c % W, z = (c / W) | 0, nb = [];
+    if (x + 1 < W && !seen[c + 1]) nb.push(0);
+    if (z + 1 < H && !seen[c + W]) nb.push(1);
+    if (x > 0 && !seen[c - 1]) nb.push(2);
+    if (z > 0 && !seen[c - W]) nb.push(3);
+    if (!nb.length) { st.pop(); continue; }
+    const d = nb[(rnd() * nb.length) | 0];
+    const n = d === 0 ? c + 1 : d === 1 ? c + W : d === 2 ? c - 1 : c - W;
+    if (d === 0) openE[c] = 1; else if (d === 1) openS[c] = 1; else if (d === 2) openE[n] = 1; else openS[n] = 1;
+    seen[n] = 1; parent[n] = c; st.push(n);
+  }
+}
+// ---- Instancias [x, y, z, escala, modelo, yaw, hash, 0] ----
+const R = (a, b, c) => 0.5 * Math.hypot(a, b, c);
+const rWall = R(1.5, 2.7, 0.12), rFloor = R(1.5, 0.2, 1.5), rCeil = R(1.5, 0.2, 1.5), rLamp = R(0.5, 0.12, 0.5);
+const inst = [], lamps = [];
+const add = (m, r, x, y0, z, yaw) => inst.push(x, y0 + r * off(m), z, r, m, yaw, rnd(), 0);
+for (let z = 0; z < H; z++) for (let x = 0; x < W; x++) {
+  const c = z * W + x, cx = (x + 0.5) * CELL, cz = (z + 0.5) * CELL;
+  add(1, rFloor, cx, -0.2, cz, 0);
+  add(2, rCeil, cx, HEIGHT, cz, 0);
+  if (!openE[c]) add(0, rWall, (x + 1) * CELL, 0, cz, Math.PI / 2);
+  if (!openS[c]) add(0, rWall, cx, 0, (z + 1) * CELL, 0);
+  if (x === 0) add(0, rWall, 0, 0, cz, Math.PI / 2);
+  if (z === 0) add(0, rWall, cx, 0, 0, 0);
+  if (x % 3 === 1 && z % 3 === 1) { add(4, rLamp, cx, HEIGHT - 0.12, cz, 0); lamps.push(cx, HEIGHT - 0.14, cz); }
+}
+const count = inst.length / 8;
+const c = document.getElementById("c"), dpr = Math.min(devicePixelRatio, 2);
+const fit = () => { c.width = innerWidth * dpr; c.height = innerHeight * dpr; };
+fit();
+const p = await createEngine(c, pkg, { capacity: count, instances: new Float32Array(inst), environment: true });
+const guard = watch(p, (m, lost) => { load.style.display = "grid"; load.textContent = (lost ? "" : "Error de GPU: ") + m; });
+addEventListener("resize", () => { fit(); p.resize(c.width, c.height); });
+p.set_environment(false);                 // sin cielo ni suelo de exterior
+p.set_sun(0, 0, 0, 1); p.set_sun_dir(0, -0.6); p.set_shadows(false);
+load.style.display = "none";
+
+// ---- Panel ----
+const S = { amb: 0.5, spot: 1, exp: 1.2, bloom: 0.05, ao: 0.8, occ: true, sh: true };
+const apply = () => {
+  p.set_flat_ambient(1.0, 0.82, 0.62, S.amb);
+  p.set_exposure(S.exp); p.set_post(S.bloom, S.ao, 0.5); p.set_occlusion(S.occ);
+  lastLx = 1e9; // fuerza a recalcular luces
+};
+const rows = [["amb", "Ambiente", 0.05, 2, 0.05], ["spot", "Focos", 0, 4, 0.1], ["exp", "Exposición", 0.3, 4, 0.05], ["bloom", "Bloom", 0, 0.5, 0.01], ["ao", "AO", 0, 1, 0.05]];
+for (const [k, n, mn, mx, st] of rows) {
+  const l = document.createElement("label");
+  l.innerHTML = `${n}<input type="range" min="${mn}" max="${mx}" step="${st}" value="${S[k]}"><output>${S[k]}</output>`;
+  const r = l.querySelector("input"), o = l.querySelector("output");
+  r.oninput = () => { S[k] = +r.value; o.textContent = (+r.value).toFixed(2); apply(); };
+  ui.appendChild(l);
+}
+for (const [k, n] of [["occ", "Oclusión (Hi-Z)"], ["sh", "Sombras de focos"]]) {
+  const l = document.createElement("label"); l.className = "chk";
+  l.innerHTML = `<input type="checkbox" ${S[k] ? "checked" : ""}>${n}`;
+  l.querySelector("input").onchange = (e) => { S[k] = e.target.checked; apply(); };
+  ui.appendChild(l);
+}
+
+// ---- Luces: los focos de techo mas cercanos a la camara (hasta 160 a menos de 11 m) ----
+let lastLx = 1e9, lastLz = 1e9;
+const refreshLights = (x, z) => {
+  if (Math.hypot(x - lastLx, z - lastLz) < 1.2) return;
+  lastLx = x; lastLz = z;
+  const sel = [];
+  for (let i = 0; i < lamps.length; i += 3) {
+    const d = Math.hypot(lamps[i] - x, lamps[i + 2] - z);
+    if (d < 11) sel.push([d, i]);
+  }
+  sel.sort((a, b) => a[0] - b[0]);
+  const out = [];
+  for (const [, i] of sel.slice(0, 160)) {
+    const l = light.spot(lamps[i], lamps[i + 1], lamps[i + 2], 9, 1.0, 0.82, 0.55, 26 * S.spot, 0, -1, 0, 78);
+    l[14] = S.sh ? 1 : 0;   // elegible para sombra
+    out.push(...l);
+  }
+  p.set_lights(new Float32Array(out));
+};
+
+// ---- Camara: recorrido automatico por el camino mas largo del laberinto, o vuelo libre ----
+const farthest = (() => { let best = 0, bd = -1; for (let i = 0; i < W * H; i++) { let d = 0, k = i; while (parent[k] >= 0) { k = parent[k]; d++; } if (d > bd) { bd = d; best = i; } } return best; })();
+const path = []; for (let k = farthest; k >= 0; k = parent[k]) path.push(k); path.reverse();
+const pos = (k) => [((k % W) + 0.5) * CELL, ((k / W) | 0) * CELL + CELL / 2];
+const cam = { x: pos(0)[0], y: 1.6, z: pos(0)[1], yaw: 0, pitch: 0, free: false };
+const keys = {};
+addEventListener("keydown", (e) => { keys[e.code] = true; if (e.code === "KeyF") { cam.free = !cam.free; if (!cam.free) document.exitPointerLock(); } if (e.code === "KeyU") ui.style.display = ui.style.display === "none" ? "block" : "none"; });
+addEventListener("keyup", (e) => { keys[e.code] = false; });
+c.addEventListener("click", () => { if (cam.free) c.requestPointerLock(); });
+addEventListener("mousemove", (e) => { if (document.pointerLockElement !== c) return; cam.yaw += e.movementX * 0.002; cam.pitch = Math.max(-1.4, Math.min(1.4, cam.pitch - e.movementY * 0.002)); });
+let s = 0, last = performance.now(), ms = 16, f = 0, st = [0, 0, 0, 0, 0, 0, 0, 0];
+apply();
+const loop = (now) => {
+  const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
+  if (cam.free) {
+    const sp = (keys.ShiftLeft ? 8 : 3) * dt, fx = Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
+    const mv = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0), sd = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+    cam.x += (fx * mv - fz * sd) * sp; cam.z += (fz * mv + fx * sd) * sp;
+  } else {
+    s = Math.min(s + dt * 2.6 / CELL, path.length - 1.001);
+    const i = Math.floor(s), u = s - i, a = pos(path[i]), b = pos(path[i + 1]), d = pos(path[Math.min(i + 3, path.length - 1)]);
+    cam.x = a[0] + (b[0] - a[0]) * u; cam.z = a[1] + (b[1] - a[1]) * u;
+    const ty = Math.atan2(d[0] - cam.x, -(d[1] - cam.z));
+    let dy = ty - cam.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+    cam.yaw += dy * Math.min(1, dt * 3); cam.pitch *= 0.95;
+  }
+  refreshLights(cam.x, cam.z);
+  p.frame(cam.x, cam.y, cam.z, cam.yaw, cam.pitch);
+  guard();
+  ms = ms * 0.95 + (now - last) * 0.05; last = now;
+  if (++f % 20 === 0) {
+    st = Array.from(p.stats());
+    window.__stats = { ms, s: st, cam: [cam.x, cam.z], count };
+    hud.textContent = `Phoenix · interior ${W}x${H} celdas · ${count.toLocaleString("es-ES")} instancias
+visibles ${st[0].toLocaleString("es-ES")} · triangulos dibujados ${st[1].toLocaleString("es-ES")}
+frame ${ms.toFixed(2)} ms · GPU: culling ${st[4].toFixed(2)} · render ${st[5].toFixed(2)} · sombras ${st[6].toFixed(2)} · hiz+post ${st[7].toFixed(2)} ms`;
+  }
+  requestAnimationFrame(loop);
+};
+window.__p = p; window.__cam = cam;
+requestAnimationFrame(loop);
+</script>

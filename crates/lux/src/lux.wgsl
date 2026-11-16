@@ -14,6 +14,8 @@ struct Sh {
   texel: vec4<f32>,      // tamano de texel (m) por cascada, z = 1 / resolucion, w = exposicion
   moon_dir: vec4<f32>,
   moon_rad: vec4<f32>,
+  ambient: vec4<f32>,    // rgb = ambiente plano (interiores); w > 0 lo activa en lugar del ambiente por hora
+  spot_vp: array<mat4x4<f32>, 4>,   // vista-proyeccion de los focos con sombra (capas 2..5)
 };
 @group(3) @binding(3) var shadow_t: texture_depth_2d_array;
 @group(3) @binding(4) var shadow_s: sampler_comparison;
@@ -121,6 +123,26 @@ fn shadow_at(w: vec3<f32>, n: vec3<f32>, depth: f32, frag: vec2<f32>) -> f32 {
   return mix(s, 1.0, smoothstep(sh.split.y * 0.8, sh.split.y, depth));
 }
 
+// Sombra de un foco: mapa en perspectiva en la capa 2 + slot. Offset por la normal y bias
+// proporcionales al tamano del texel en el punto.
+fn spot_shadow(slot: u32, w: vec3<f32>, n: vec3<f32>, lpos: vec3<f32>) -> f32 {
+  let dist = distance(w, lpos);
+  let wp = w + n * (dist * 0.003);
+  let lp = sh.spot_vp[slot] * vec4<f32>(wp, 1.0);
+  if (lp.w <= 0.0) { return 1.0; }
+  let ndc = lp.xyz / lp.w;
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+  if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z > 1.0) { return 1.0; }
+  let z = ndc.z - 0.002 / (dist * dist + 0.01);
+  var s = 0.0;
+  for (var j = -1; j <= 1; j++) {
+    for (var i = -1; i <= 1; i++) {
+      s += textureSampleCompareLevel(shadow_t, shadow_s, uv + vec2<f32>(f32(i), f32(j)) * sh.texel.z * 1.5, i32(2u + slot), z);
+    }
+  }
+  return s / 9.0;
+}
+
 fn aces(x: vec3<f32>) -> vec3<f32> {
   return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
 }
@@ -139,7 +161,7 @@ fn brdf(l: vec3<f32>, rad: vec3<f32>, n: vec3<f32>, v: vec3<f32>, alb: vec3<f32>
         rough: f32, metal: f32, f0: vec3<f32>) -> vec3<f32> {
   let nl = max(dot(n, l), 0.0);
   if (nl <= 0.0) { return vec3<f32>(0.0); }
-  let h = normalize(l + v);
+  let h = normalize(l + v + vec3<f32>(1e-5));
   let nh = max(dot(n, h), 0.0);
   let nv = max(dot(n, v), 1e-3);
   let vh = max(dot(v, h), 0.0);
@@ -148,7 +170,7 @@ fn brdf(l: vec3<f32>, rad: vec3<f32>, n: vec3<f32>, v: vec3<f32>, alb: vec3<f32>
   let d = a2 / (PI * dd * dd);
   let k = (rough + 1.0) * (rough + 1.0) / 8.0;
   let gs = (nl / (nl * (1.0 - k) + k)) * (nv / (nv * (1.0 - k) + k));
-  let f = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vh, 5.0);
+  let f = f0 + (vec3<f32>(1.0) - f0) * pow(max(1.0 - vh, 0.0), 5.0);
   let spec = d * gs * f / (4.0 * nl * nv);
   let kd = (vec3<f32>(1.0) - f) * (1.0 - metal);
   return (kd * alb + spec * PI) * rad * nl;
@@ -168,7 +190,8 @@ fn lit_surface(wpos: vec3<f32>, n: vec3<f32>, view: vec3<f32>, alb: vec3<f32>, r
   let glow = horizon_col(se) * 0.5 * exp(-abs(se) * 7.0) * day_k(se + 0.1);
   let up = mix(vec3<f32>(0.02, 0.03, 0.07), vec3<f32>(0.42, 0.52, 0.72), dk) + glow;
   let dn = mix(vec3<f32>(0.01, 0.01, 0.015), vec3<f32>(0.30, 0.24, 0.17), dk) + glow * 0.6;
-  let amb = mix(dn, up, n.y * 0.5 + 0.5) * sh.sun.w;
+  var amb = mix(dn, up, n.y * 0.5 + 0.5) * sh.sun.w;
+  if (sh.ambient.w > 0.0) { amb = sh.ambient.rgb * mix(0.7, 1.0, n.y * 0.5 + 0.5); }
   col += alb * (1.0 - metal) * amb * ao;
   // Luces: solo las del cluster del fragmento.
   let cx = min(u32(frag.x / g.grid.x * f32(CX)), CX - 1u);
@@ -201,11 +224,12 @@ fn lit_surface(wpos: vec3<f32>, n: vec3<f32>, view: vec3<f32>, alb: vec3<f32>, r
     let q = d2 / (r * r);
     let win = clamp(1.0 - q * q, 0.0, 1.0);
     var att = win * win / (d2 + 0.5);
-    if (kind == 1u) {
-      // Foco: transicion suave entre el borde del cono y su 65 % interior.
+    if (kind == 1u || kind >= 11u) {
+      // Foco: transicion suave entre el borde del cono y su 65 % interior; con sombra si tiene slot.
       let cd = dot(-d / dist, c.xyz);
       let sp = smoothstep(c.w, mix(c.w, 1.0, 0.35), cd);
       att *= sp * sp;
+      if (kind >= 11u && att > 0.0) { att *= spot_shadow(kind - 11u, wpos, n, a.xyz); }
     }
     col += brdf(d / dist, b.rgb * att, n, view, alb, rough, metal, f0);
   }

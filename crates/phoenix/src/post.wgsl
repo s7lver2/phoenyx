@@ -108,7 +108,8 @@ fn down(uv: vec2<f32>) -> vec3<f32> {
 // Primer nivel: solo pasa lo que supera el umbral (radiancia HDR > 1).
 @fragment
 fn fs_down0(v: FOut) -> @location(0) vec4<f32> {
-  let c = down(v.uv);
+  var c = down(v.uv);
+  if (any(c != c) || any(abs(c) > vec3<f32>(1e6))) { c = vec3<f32>(0.0); }   // nunca propagar NaN/Inf
   let br = max(max(c.r, c.g), c.b);
   return vec4<f32>(c * (max(br - 1.0, 0.0) / max(br, 1e-4)), 1.0);
 }

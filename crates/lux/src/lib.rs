@@ -17,6 +17,9 @@ pub const MAX_LIGHTS: u32 = 512;
 pub const CLUSTERS: u32 = 16 * 9 * 24;
 /// Radios (m) de las dos cascadas del sol, alrededor de la camara.
 pub const CASCADES: [f32; 2] = [25.0, 130.0];
+/// Focos con sombra a la vez (los mas cercanos a la camara); usan las capas 2..=5.
+pub const MAX_SHADOW_SPOTS: usize = 4;
+pub const SHADOW_LAYERS: u32 = 2 + MAX_SHADOW_SPOTS as u32;
 /// Floats por luz en `Lux::set_lights`.
 pub const LIGHT_STRIDE: usize = 16;
 
@@ -36,6 +39,26 @@ struct ShU {
     texel: [f32; 4],
     moon_dir: [f32; 4],
     moon_rad: [f32; 4],
+    ambient: [f32; 4],
+    spot_vp: [[f32; 16]; MAX_SHADOW_SPOTS],
+}
+
+/// Un foco con sombra para este frame: el anfitrion renderiza la escena con `view_proj` en la capa `2 + slot`.
+pub struct SpotShadow {
+    pub slot: usize,
+    pub view_proj: Mat4,
+    pub pos: Vec3,
+    /// Campo de vision vertical (rad), para el factor de pixeles del LOD.
+    pub fov: f32,
+    pub radius: f32,
+}
+
+struct Eligible {
+    index: usize,
+    pos: Vec3,
+    dir: Vec3,
+    cone: f32,
+    radius: f32,
 }
 
 /// Una cascada de sombras: camara ortografica alineada a la luz y ajustada al texel.
@@ -60,6 +83,10 @@ pub struct Lux {
     pub moon: [f32; 3],
     pub exposure: f32,
     pub shadows: bool,
+    /// Ambiente plano (interiores): sustituye al ambiente por hora si es Some.
+    pub flat_ambient: Option<[f32; 3]>,
+    eligible: Vec<Eligible>,
+    assigned: [Option<usize>; MAX_SHADOW_SPOTS],
 }
 
 /// Planos del frustum (normalizados) de una matriz vista-proyeccion con profundidad 0..1.
@@ -80,7 +107,7 @@ impl Lux {
     pub fn new(device: &wgpu::Device) -> Lux {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("lux-shadow"),
-            size: wgpu::Extent3d { width: SHADOW_RES, height: SHADOW_RES, depth_or_array_layers: 2 },
+            size: wgpu::Extent3d { width: SHADOW_RES, height: SHADOW_RES, depth_or_array_layers: SHADOW_LAYERS },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -89,7 +116,7 @@ impl Lux {
         let array_view = tex.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default()
         });
-        let layers = (0..2)
+        let layers = (0..SHADOW_LAYERS)
             .map(|i| tex.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: i, array_layer_count: Some(1),
                 ..Default::default()
@@ -114,6 +141,9 @@ impl Lux {
             moon: [0.0; 3],
             exposure: 1.0,
             shadows: true,
+            flat_ambient: None,
+            eligible: vec![],
+            assigned: [None; MAX_SHADOW_SPOTS],
         }
     }
 
@@ -163,7 +193,15 @@ impl Lux {
     pub fn set_lights(&mut self, queue: &wgpu::Queue, data: &[f32]) {
         let n = ((data.len() / LIGHT_STRIDE) as u32).min(MAX_LIGHTS);
         let mut v = Vec::with_capacity(n as usize * 12);
-        for l in data.chunks_exact(LIGHT_STRIDE).take(n as usize) {
+        self.eligible.clear();
+        self.assigned = [None; MAX_SHADOW_SPOTS];
+        for (index, l) in data.chunks_exact(LIGHT_STRIDE).take(n as usize).enumerate() {
+            if l[8] == SPOT && l[14] > 0.5 {
+                self.eligible.push(Eligible {
+                    index, pos: Vec3::new(l[0], l[1], l[2]), dir: Vec3::new(l[9], l[10], l[11]).normalize_or_zero(),
+                    cone: l[12].to_radians(), radius: l[3],
+                });
+            }
             let k = l[7];
             let (kind, d) = (l[8], Vec3::new(l[9], l[10], l[11]).normalize_or_zero());
             let c = if kind == SPOT {
@@ -178,6 +216,42 @@ impl Lux {
         }
         queue.write_buffer(&self.lights, 0, bytemuck::cast_slice(&v));
         self.n_lights = n;
+    }
+
+    /// Elige los focos con sombra mas cercanos a la camara (los marcados con `l[14] = 1`) y devuelve
+    /// sus vistas. Cambia en el buffer de luces solo el tipo de las que ganan o pierden el slot.
+    pub fn update_shadow_spots(&mut self, queue: &wgpu::Queue, eye: Vec3) -> Vec<SpotShadow> {
+        let mut near: Vec<(f32, usize)> = self.eligible.iter().enumerate()
+            .map(|(k, e)| (e.pos.distance(eye), k))
+            .filter(|(d, k)| *d < self.eligible[*k].radius + 8.0)
+            .collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        near.truncate(MAX_SHADOW_SPOTS);
+        let mut want: [Option<usize>; MAX_SHADOW_SPOTS] = [None; MAX_SHADOW_SPOTS];
+        // Conserva el slot de los que ya lo tenian; los nuevos ocupan los libres.
+        for &(_, k) in &near {
+            if let Some(s) = self.assigned.iter().position(|a| *a == Some(k)) { want[s] = Some(k); }
+        }
+        for &(_, k) in &near {
+            if !want.contains(&Some(k)) {
+                if let Some(s) = want.iter().position(|a| a.is_none()) { want[s] = Some(k); }
+            }
+        }
+        let write = |li: usize, kind: f32| queue.write_buffer(&self.lights, li as u64 * 48 + 28, bytemuck::bytes_of(&kind));
+        for s in 0..MAX_SHADOW_SPOTS {
+            if self.assigned[s] != want[s] {
+                if let Some(k) = self.assigned[s] { if !want.contains(&Some(k)) { write(self.eligible[k].index, SPOT); } }
+                if let Some(k) = want[s] { write(self.eligible[k].index, 11.0 + s as f32); }
+            }
+        }
+        self.assigned = want;
+        want.iter().enumerate().filter_map(|(slot, k)| {
+            let e = &self.eligible[(*k)?];
+            let fov = (e.cone * 2.0 + 0.12).min(2.6);
+            let up = if e.dir.y.abs() > 0.99 { Vec3::X } else { Vec3::Y };
+            let vp = Mat4::perspective_rh(fov, 1.0, 0.1, e.radius) * Mat4::look_to_rh(e.pos, e.dir, up);
+            Some(SpotShadow { slot, view_proj: vp, pos: e.pos, fov, radius: e.radius })
+        }).collect()
     }
 
     pub fn set_sun_dir(&mut self, az: f32, el: f32) {
@@ -212,12 +286,15 @@ impl Lux {
     }
 
     /// Escribe el uniforme de iluminacion; `cascades` = None desactiva las sombras.
-    pub fn write_uniform(&self, queue: &wgpu::Queue, cascades: Option<&[Cascade; 2]>) {
+    pub fn write_uniform(&self, queue: &wgpu::Queue, cascades: Option<&[Cascade; 2]>, spots: &[SpotShadow]) {
         let mut u = ShU::zeroed();
         u.sun = self.sun;
         u.texel[3] = self.exposure;
         u.moon_dir = [self.moon_dir.x, self.moon_dir.y, self.moon_dir.z, 0.0];
         u.moon_rad = [self.moon[0], self.moon[1], self.moon[2], 0.0];
+        if let Some(a) = self.flat_ambient { u.ambient = [a[0], a[1], a[2], 1.0]; }
+        for s in spots { u.spot_vp[s.slot] = s.view_proj.to_cols_array(); }
+        if !spots.is_empty() { u.texel[2] = 1.0 / SHADOW_RES as f32; }
         if let Some(c) = cascades {
             for i in 0..2 {
                 u.vp[i] = c[i].view_proj.to_cols_array();
