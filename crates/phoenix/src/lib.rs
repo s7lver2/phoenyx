@@ -81,7 +81,11 @@ pub struct Phoenix {
     lods: u32,
     frame: u64,
     tau: f32,
-    spacing: f32,
+    capacity: u32,
+    inst_buf: wgpu::Buffer,
+    chunks: wgpu::Buffer,
+    chunk_pl: wgpu::ComputePipeline,
+    dirty: bool,
     flat: bool,
     textured: bool,
     tex_bg: wgpu::BindGroup,
@@ -246,6 +250,7 @@ pub async fn create(
     ground_mips: u32,
     ground_base: &[u8],
     ground_norm: &[u8],
+    instances: &[f32],
 ) -> Result<Phoenix, JsValue> {
     console_error_panic_hook::set_once();
     let (w, h) = (canvas.width().max(1), canvas.height().max(1));
@@ -291,79 +296,17 @@ pub async fn create(
         label: None, contents: bytemuck::cast_slice(info), usage: wgpu::BufferUsages::STORAGE,
     });
 
-    // Instancias en rejilla: colinas con rocas, o plano con estatuas apoyadas en el suelo.
-    let spacing = if flat { 3.2 } else { 4.0 };
-    let side = (count as f32).sqrt().ceil() as u32;
-    let mut insts: Vec<[f32; 4]> = Vec::with_capacity(count as usize * 2);
-    let hs = |i: u32, k: u32| {
-        // Hash con buen mezclado: sin correlacion entre canales k.
-        let mut h = i.wrapping_mul(0x9E3779B1) ^ k.wrapping_mul(0x85EBCA6B);
-        h ^= h >> 16;
-        h = h.wrapping_mul(0x7FEB352D);
-        h ^= h >> 15;
-        h = h.wrapping_mul(0x846CA68B);
-        h ^= h >> 16;
-        (h & 0xffffff) as f32 / 16777215.0
-    };
-    // Escena cinematografica: estatua heroe en el origen, rocas, y un ejercito de estatuas en
-    // bloques de 8 columnas separados por pasillos (un pasillo en x = 0).
-    let rocks = if flat { 60000u32.min(count / 4) } else { 0 };
-    let ns = count - rocks;
-    let off = |m: usize| info[m * 16 + 13];
-    let hgt = |m: usize| info[m * 16 + 14];
-    let s_statue = 4.6 / hgt(0);
-    let (nb, cols) = (60u32, 480u32);
-    for i in 0..count {
-        if flat {
-            let (a, b) = if i == 0 {
-                ([0.0, s_statue * off(0), 0.0, s_statue], [0.0, 0.0, 0.5, 0.0])
-            } else if i >= ns {
-                let r = i - ns;
-                let (x, z, s) = if r < 40 {
-                    // Rocas grandes detras de la estatua heroe.
-                    ((hs(i, 1) - 0.5) * 70.0, 12.0 + hs(i, 2) * 38.0, 2.5 + hs(i, 3) * 3.5)
-                } else if r < 3000 {
-                    // Escombros alrededor de la estatua: muchos pequenos, pocos grandes.
-                    let (an, rad) = (hs(i, 1) * 6.2832, 4.0 + hs(i, 2) * 55.0);
-                    let q = hs(i, 3);
-                    (an.cos() * rad, an.sin() * rad, 0.12 + q * q * q * 2.6)
-                } else if r < 32000 {
-                    // Guijarros en el pasillo central.
-                    ((hs(i, 1) - 0.5) * 6.5, -70.0 - hs(i, 2) * 900.0, 0.07 + hs(i, 3) * hs(i, 3) * 0.3)
-                } else {
-                    ((hs(i, 1) - 0.5) * 1500.0, -80.0 - hs(i, 2) * 4000.0, 0.3 + hs(i, 3) * hs(i, 3) * 3.0)
-                };
-                let mi = 1 + (i as usize % (models as usize - 1));
-                ([x, s * (off(mi) - 0.22), z, s], [mi as f32, hs(i, 4) * 6.2832, hs(i, 5), 0.0])
-            } else {
-                let k = i - 1;
-                let (c, r) = (k % cols, k / cols);
-                let (bl, kk) = (c / 8, c % 8);
-                let center = (bl as f32 - nb as f32 / 2.0 + 0.5) * 23.6;
-                let x = center + (kk as f32 - 3.5) * 2.2;
-                let s = s_statue * (0.98 + hs(i, 3) * 0.04);
-                ([x, s * off(0), -80.0 - r as f32 * 3.6, s], [0.0, (hs(i, 4) - 0.5) * 0.15, hs(i, 5), 0.0])
-            };
-            insts.push(a);
-            insts.push(b);
-            continue;
-        }
-        let (gx, gz) = ((i % side) as f32 * spacing, (i / side) as f32 * spacing);
-        let jit = if flat { 0.6 } else { 3.0 };
-        let (x, z) = (gx + (hs(i, 1) - 0.5) * jit, gz + (hs(i, 2) - 0.5) * jit);
-        let (s, y) = if flat {
-            let s = 0.9 + hs(i, 3) * 0.8;
-            (s, s * 0.947)
-        } else {
-            let s = 0.8 + hs(i, 3) * hs(i, 3) * 3.0;
-            let ground = 14.0 * (x * 0.006).sin() * (z * 0.008).cos() + 5.0 * (x * 0.02 + z * 0.015).sin();
-            (s, ground + s * 0.5)
-        };
-        insts.push([x, y, z, s]);
-        insts.push([(i.wrapping_mul(0x9E3779B1) >> 16) as f32 % models as f32, hs(i, 4) * 6.2832, hs(i, 5), 0.0]);
-    }
-    let inst_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None, contents: bytemuck::cast_slice(&insts), usage: wgpu::BufferUsages::STORAGE,
+    // Instancias: 8 floats cada una [x, y, z, escala, modelo, yaw, hash, 0]; las pone el anfitrion
+    // (`instances` ahora y `set_instances` despues). `count` es la capacidad maxima.
+    let n0 = ((instances.len() / 8) as u32).min(count);
+    let inst_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None, size: count as u64 * 32, mapped_at_creation: false,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    });
+    queue.write_buffer(&inst_buf, 0, bytemuck::cast_slice(&instances[..n0 as usize * 8]));
+    let chunks = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None, size: count.div_ceil(64) as u64 * 16 + 16, mapped_at_creation: false,
+        usage: wgpu::BufferUsages::STORAGE,
     });
 
     let nd = (models * lods) as usize;
@@ -415,7 +358,7 @@ pub async fn create(
         label: None,
         entries: &[
             uni(S::COMPUTE), entry(ro, 1, S::COMPUTE), entry(ro, 2, S::COMPUTE),
-            entry(rw, 3, S::COMPUTE), entry(rw, 4, S::COMPUTE), entry(rw, 5, S::COMPUTE),
+            entry(rw, 3, S::COMPUTE), entry(rw, 4, S::COMPUTE), entry(rw, 5, S::COMPUTE), entry(rw, 6, S::COMPUTE),
         ],
     });
     let draw_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -432,7 +375,7 @@ pub async fn create(
             .collect();
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: l, entries: &e })
     };
-    let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &info_buf), (3, &args), (4, &cur), (5, &vis)]);
+    let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &info_buf), (3, &args), (4, &cur), (5, &vis), (6, &chunks)]);
     let draw_bg = bind(&draw_l, &[(0, &globals), (1, &inst_buf)]);
     let vis_bg = bind(&vis_l, &[(0, &vis)]);
 
@@ -516,6 +459,7 @@ pub async fn create(
         })
     };
     let (count_pl, scan_pl, scatter_pl) = (cpl("count"), cpl("scan"), cpl("scatter"));
+    let chunk_pl = cpl("chunk_build");
     let draw_pl = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -637,7 +581,7 @@ pub async fn create(
         let svis = device.create_buffer(&wgpu::BufferDescriptor {
             label: None, size: count as u64 * 4, mapped_at_creation: false, usage: wgpu::BufferUsages::STORAGE,
         });
-        let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &info_buf), (3, &args), (4, &cur), (5, &svis)]);
+        let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &info_buf), (3, &args), (4, &cur), (5, &svis), (6, &chunks)]);
         let dbg = bind(&draw_l, &[(0, &globals), (1, &inst_buf)]);
         let vbg = bind(&vis_l, &[(0, &svis)]);
         let mut b = device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
@@ -759,8 +703,8 @@ pub async fn create(
     };
     Ok(Phoenix {
         surface, cfg, device, queue, depth, tg, post, post_k: [0.05, 0.8, 0.6], globals, args, cur, staging, count_pl, scan_pl, scatter_pl,
-        cull_bg, draw_pl, bundle, cluster_pl, lux, sviews, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: count, models, lods,
-        frame: 0, tau: 1.0, spacing, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
+        cull_bg, draw_pl, bundle, cluster_pl, lux, sviews, draw_bg, vis_bg, vbuf, ibuf, args0, zeros: vec![0; nd], n: n0, models, lods,
+        frame: 0, tau: 1.0, capacity: count, inst_buf, chunks, chunk_pl, dirty: true, flat, textured, tex_bg, gnd_bg, ground_pl, sky_pl, busy: Rc::new(Cell::new(false)), stats: Rc::new(Cell::new([0.0; 6])), ts,
         tris: Rc::new(tris), full: Rc::new(full),
     })
 }
@@ -821,9 +765,24 @@ impl Phoenix {
         self.lux.shadows = on;
     }
 
-    /// Ancho y alto de la rejilla de instancias en metros.
-    pub fn extent(&self) -> f32 {
-        (self.n as f32).sqrt().ceil() * self.spacing
+    /// Escribe instancias a partir de la posicion `first` (8 floats cada una:
+    /// x, y, z, escala, modelo, yaw, hash, 0). Amplia el contador si hace falta.
+    pub fn set_instances(&mut self, first: u32, data: &[f32]) {
+        let n = (data.len() / 8) as u32;
+        let n = n.min(self.capacity.saturating_sub(first));
+        self.queue.write_buffer(&self.inst_buf, first as u64 * 32, bytemuck::cast_slice(&data[..n as usize * 8]));
+        self.n = self.n.max(first + n);
+        self.dirty = true;
+    }
+
+    /// Numero de instancias activas (0..=capacidad).
+    pub fn set_count(&mut self, n: u32) {
+        self.n = n.min(self.capacity);
+        self.dirty = true;
+    }
+
+    pub fn count(&self) -> u32 {
+        self.n
     }
 
     pub fn frame(&mut self, ex: f32, ey: f32, ez: f32, yaw: f32, pitch: f32) {
@@ -881,6 +840,7 @@ impl Phoenix {
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
         let groups = self.n.div_ceil(64);
+        let dirty = std::mem::take(&mut self.dirty);
         let tw = |i: u32| self.ts.as_ref().map(|t| (&t.qs, i));
         {
             // Una sola pasada con los tres dispatches (WebGPU los ordena dentro de la pasada).
@@ -892,6 +852,11 @@ impl Phoenix {
                     end_of_pass_write_index: Some(1),
                 }),
             });
+            if dirty {
+                p.set_pipeline(&self.chunk_pl);
+                p.set_bind_group(0, &self.cull_bg, &[]);
+                p.dispatch_workgroups(self.n.div_ceil(64).div_ceil(64).max(1), 1, 1);
+            }
             let views = std::iter::once(&self.cull_bg).chain(self.sviews.iter().take(if shadows { 2 } else { 0 }).map(|v| &v.cull_bg));
             for bg in views {
                 p.set_bind_group(0, bg, &[]);

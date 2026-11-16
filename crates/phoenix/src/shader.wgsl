@@ -18,6 +18,7 @@ struct Globals {
 @group(0) @binding(3) var<storage, read_write> args: array<atomic<u32>>; // 5 u32 por draw
 @group(0) @binding(4) var<storage, read_write> cur: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> vis: array<u32>;
+@group(0) @binding(6) var<storage, read_write> chunks: array<vec4<f32>>;   // esfera (centro, radio) de cada grupo de 64 instancias
 
 // Seleccion de LOD con fundido: el nivel fino se dibuja siempre; si el siguiente nivel grueso esta
 // a punto de ser aceptable (error entre 1x y FADE_W x la tolerancia) tambien se emite el grueso y
@@ -59,9 +60,40 @@ fn pick(i: u32) -> Pick {
   return o;
 }
 
+// Cada workgroup procesa un chunk de 64 instancias contiguas: si su esfera queda fuera del
+// frustum, ningun hilo lee los datos de sus instancias.
+var<workgroup> chunk_ok: u32;
+
+fn chunk_visible(c: u32) -> bool {
+  let s = chunks[c];
+  for (var p = 0u; p < 6u; p++) {
+    if (dot(g.planes[p].xyz, s.xyz) + g.planes[p].w < -s.w) { return false; }
+  }
+  return true;
+}
+
 @compute @workgroup_size(64)
-fn count(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (id.x >= u32(g.misc.x)) { return; }
+fn chunk_build(@builtin(global_invocation_id) id: vec3<u32>) {
+  let n = u32(g.misc.x);
+  if (id.x * 64u >= n) { return; }
+  var lo = vec3<f32>(1e30);
+  var hi = vec3<f32>(-1e30);
+  for (var k = 0u; k < 64u; k++) {
+    let i = id.x * 64u + k;
+    if (i >= n) { break; }
+    let a = inst[2u * i];
+    lo = min(lo, a.xyz - vec3<f32>(a.w));
+    hi = max(hi, a.xyz + vec3<f32>(a.w));
+  }
+  chunks[id.x] = vec4<f32>((lo + hi) * 0.5, length(hi - lo) * 0.5);
+}
+
+@compute @workgroup_size(64)
+fn count(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) li: u32,
+         @builtin(workgroup_id) wg: vec3<u32>) {
+  if (li == 0u) { chunk_ok = select(0u, 1u, chunk_visible(wg.x)); }
+  workgroupBarrier();
+  if (chunk_ok == 0u || id.x >= u32(g.misc.x)) { return; }
   let p = pick(id.x);
   if (p.d0 >= 0) { atomicAdd(&args[u32(p.d0) * 5u + 1u], 1u); }
   if (p.d1 >= 0) { atomicAdd(&args[u32(p.d1) * 5u + 1u], 1u); }
@@ -78,8 +110,11 @@ fn scan() {
 }
 
 @compute @workgroup_size(64)
-fn scatter(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (id.x >= u32(g.misc.x)) { return; }
+fn scatter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) li: u32,
+           @builtin(workgroup_id) wg: vec3<u32>) {
+  if (li == 0u) { chunk_ok = select(0u, 1u, chunk_visible(wg.x)); }
+  workgroupBarrier();
+  if (chunk_ok == 0u || id.x >= u32(g.misc.x)) { return; }
   let p = pick(id.x);
   // vis = instancia | peso (7 bits) << 24 | rol (bit 31: 1 = copia gruesa)
   if (p.d0 >= 0) {

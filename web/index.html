@@ -48,7 +48,38 @@ const c = document.getElementById("c"), dpr = Math.min(devicePixelRatio, 2);
 const fit = () => { c.width = innerWidth * dpr; c.height = innerHeight * dpr; };
 fit();
 load.textContent = "creando escena…";
-const p = await create(c, verts, idx, new Float32Array(meta.info), new Uint32Array(meta.draws.flat()), meta.models, meta.lods, N + EXTRA, cine, tex.size, tex.mips, tex.layers, tb, tn, to, gr.size, gr.mips, gb, gn);
+// Escena: el anfitrion (esta pagina) genera las instancias [x, y, z, escala, modelo, yaw, hash, 0];
+// Phoenix solo las recibe (`create` y `set_instances`). Estatua heroe, ejercito, rocas y escombros.
+const info = new Float32Array(meta.info);
+const buildScene = (count) => {
+  const hs = (i, k) => {
+    let h = Math.imul(i, 0x9E3779B1) ^ Math.imul(k, 0x85EBCA6B);
+    h ^= h >>> 16; h = Math.imul(h, 0x7FEB352D); h ^= h >>> 15; h = Math.imul(h, 0x846CA68B); h ^= h >>> 16;
+    return (h & 0xffffff) / 16777215;
+  };
+  const off = (m) => info[m * 16 + 13], hgt = (m) => info[m * 16 + 14];
+  const out = new Float32Array(count * 8);
+  const rocks = Math.min(60000, count >> 2), ns = count - rocks, sStatue = 4.6 / hgt(0), cols = 480, nb = 60;
+  for (let i = 0; i < count; i++) {
+    let x, y, z, sc, m = 0, yaw, hash;
+    if (i === 0) { x = 0; y = sStatue * off(0); z = 0; sc = sStatue; yaw = 0; hash = 0.5; }
+    else if (i >= ns) {
+      const r = i - ns;
+      if (r < 40) { x = (hs(i, 1) - 0.5) * 70; z = 12 + hs(i, 2) * 38; sc = 2.5 + hs(i, 3) * 3.5; }
+      else if (r < 3000) { const an = hs(i, 1) * 6.2832, rad = 4 + hs(i, 2) * 55, q = hs(i, 3); x = Math.cos(an) * rad; z = Math.sin(an) * rad; sc = 0.12 + q * q * q * 2.6; }
+      else if (r < 32000) { x = (hs(i, 1) - 0.5) * 6.5; z = -70 - hs(i, 2) * 900; sc = 0.07 + hs(i, 3) * hs(i, 3) * 0.3; }
+      else { x = (hs(i, 1) - 0.5) * 1500; z = -80 - hs(i, 2) * 4000; sc = 0.3 + hs(i, 3) * hs(i, 3) * 3; }
+      m = 1 + (i % (meta.models - 1)); y = sc * (off(m) - 0.22); yaw = hs(i, 4) * 6.2832; hash = hs(i, 5);
+    } else {
+      const k = i - 1, c0 = k % cols, r = Math.floor(k / cols), bl = Math.floor(c0 / 8), kk = c0 % 8;
+      x = (bl - nb / 2 + 0.5) * 23.6 + (kk - 3.5) * 2.2; sc = sStatue * (0.98 + hs(i, 3) * 0.04);
+      y = sc * off(0); z = -80 - r * 3.6; yaw = (hs(i, 4) - 0.5) * 0.15; hash = hs(i, 5);
+    }
+    out.set([x, y, z, sc, m, yaw, hash, 0], i * 8);
+  }
+  return out;
+};
+const p = await create(c, verts, idx, info, new Uint32Array(meta.draws.flat()), meta.models, meta.lods, N + EXTRA, cine, tex.size, tex.mips, tex.layers, tb, tn, to, gr.size, gr.mips, gb, gn, buildScene(N + EXTRA));
 window.__p = p;
 // Luces puntuales (culling por clusters en GPU): brasas junto a la estatua heroe y farolillos por el pasillo.
 const baseLights = [];
@@ -136,7 +167,7 @@ showVals();
 applyLight();
 
 // ---- Camara ----
-const ext = p.extent();
+const ext = 1000;
 const cam = { x: ext / 2, y: cine ? 2 : 40, z: ext / 2, yaw: 0, pitch: -0.16, free: false };
 const keys = {};
 addEventListener("keydown", (e) => {
