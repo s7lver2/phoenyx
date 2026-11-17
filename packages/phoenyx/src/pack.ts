@@ -104,6 +104,8 @@ export class Packer {
           const e = t ? t.matrix.elements : IDENT;
           uv.push(e[0], e[1], e[3], e[4], e[6], e[7], 0, 0);
         });
+        // metalnessMap solo se admite si es la misma textura que roughnessMap (asi las emite GLTFLoader)
+        if (std && m.metalnessMap && m.metalnessMap === m.roughnessMap && m.roughnessMap.image) mask |= 32;
         const ns = m.normalScale;
         matData.push(
           c.r, c.g, c.b, m.opacity,

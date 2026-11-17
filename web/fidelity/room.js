@@ -1,5 +1,7 @@
 // Sala de prueba de la fase 1, escrita solo con la API de three. Se empaqueta dos veces (three real y phoenyx): ver tools/fidelity/build-harness.mjs.
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
 const q = new URLSearchParams(location.search);
 const sceneId = q.get('scene') ?? 'exp';
@@ -239,6 +241,60 @@ if (sceneId === 'inst') {
   scene.add(g2);
 }
 
+
+// ---- geoms: todas las geometrias que usa el juego, en dos filas ----
+if (sceneId === 'geoms') {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0); shape.lineTo(0.7, 0); shape.lineTo(0.7, 0.5); shape.lineTo(0.35, 0.9); shape.lineTo(0, 0.5);
+  const curve = new THREE.CatmullRomCurve3([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.4, 0.5, 0.2), new THREE.Vector3(0.8, 0, 0.5), new THREE.Vector3(1.2, 0.6, 0)]);
+  const list = [
+    new THREE.BoxGeometry(0.7, 0.7, 0.7, 2, 2, 2),
+    new THREE.SphereGeometry(0.4, 24, 16),
+    new THREE.CylinderGeometry(0.3, 0.4, 0.8, 16, 2),
+    new THREE.ConeGeometry(0.4, 0.8, 16),
+    new THREE.CapsuleGeometry(0.25, 0.5, 6, 12),
+    new THREE.TorusGeometry(0.35, 0.12, 12, 24),
+    new THREE.OctahedronGeometry(0.45, 1),
+    new THREE.DodecahedronGeometry(0.45),
+    new THREE.LatheGeometry([new THREE.Vector2(0.01, 0), new THREE.Vector2(0.4, 0.1), new THREE.Vector2(0.25, 0.5), new THREE.Vector2(0.35, 0.8)], 20),
+    new THREE.ExtrudeGeometry(shape, { depth: 0.3, bevelEnabled: true, bevelSize: 0.05, bevelThickness: 0.05, bevelSegments: 2 }),
+    new THREE.TubeGeometry(curve, 24, 0.08, 8),
+    new THREE.RingGeometry(0.2, 0.45, 24),
+    new THREE.CircleGeometry(0.4, 24),
+    new THREE.PlaneGeometry(0.8, 0.6, 3, 3),
+  ];
+  list.forEach((g, i) => {
+    const row = i < 7 ? 0 : 1, c = i % 7;
+    const m = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(i / 14, 0.6, 0.55), roughness: 0.45, metalness: 0.1, side: i >= 11 ? THREE.DoubleSide : THREE.FrontSide });
+    const o = new THREE.Mesh(g, m);
+    o.position.set(c * 1.25 - 3.75, 0.55 + row * 1.4, 1.5 - row * 2);
+    o.rotation.set(0.3 + i * 0.05, 0.6 + i * 0.2, 0);
+    scene.add(o);
+  });
+}
+
+// ---- modelos: GLB reales del juego con GLTFLoader + meshopt ----
+let modelsDone = Promise.resolve();
+if (sceneId === 'modelos') {
+  const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+  const items = [
+    ['/models/items/bat.glb', -3.2, 0.9, 0.5], ['/models/items/nokia.glb', -1.2, 0.5, 1.0], ['/models/items/locker.glb', 1.4, 1.0, 0.0], ['/models/cosmetics/bicorn_hat.glb', 3.4, 0.5, 1.0],
+    ['/models/items/pokeball.glb', -2.2, 0.4, 2.8], ['/models/items/beer.glb', 0.2, 0.7, 3.0],
+  ];
+  modelsDone = Promise.all(items.map(async ([url, x, size, z], i) => {
+    const gltf = await loader.loadAsync(url);
+    const root = gltf.scene;
+    const box = new THREE.Box3().setFromObject(root);
+    const s = size / Math.max(...box.getSize(new THREE.Vector3()).toArray());
+    root.scale.setScalar(s);
+    box.setFromObject(root);
+    const c = box.getCenter(new THREE.Vector3());
+    root.position.set(x - c.x, 0.1 - box.min.y, z - c.z);
+    root.rotation.y = 0.5 + i * 0.3;
+    scene.add(root);
+  }));
+}
+
 // contrato de tools/fidelity/capture.mjs
 let timer = 0;
 const draw = () => renderer.render(scene, camera);
@@ -262,4 +318,4 @@ window.__capture = {
     loop();
   },
 };
-Promise.resolve(renderer.ready).then(() => (window.__capture.ready = true));
+Promise.all([renderer.ready, modelsDone]).then(() => (window.__capture.ready = true));

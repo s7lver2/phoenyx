@@ -11,3 +11,4 @@ fidelity/baseline/*/*.png
 fidelity/baseline/*/*-diff.png
 packages/phoenyx/pkg/
 web/fidelity/dist/
+web/models

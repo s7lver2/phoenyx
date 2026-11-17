@@ -27,7 +27,7 @@ struct Mat {
     emissive: vec4<f32>, // rgb emisivo * intensidad, a rugosidad
     misc: vec4<f32>,     // x metalicidad, y tipo (0 basic, 1 standard), z niebla (1 si), w vertexColors (1 si)
     tp: vec4<f32>,       // x alphaTest, yz normalScale, w bumpScale
-    maps: vec4<f32>,     // x mascara de mapas: 1 map, 2 normalMap, 4 roughnessMap, 8 emissiveMap, 16 bumpMap
+    maps: vec4<f32>,     // x mascara de mapas: 1 map, 2 normalMap, 4 roughnessMap, 8 emissiveMap, 16 bumpMap, 32 metalnessMap (misma textura que roughnessMap)
     uv: array<vec4<f32>, 10>, // por mapa (mismo orden): (a, b, c, d) y (tx, ty, 0, 0) de la matriz de uv de la textura
     pad: vec4<f32>,
 };
@@ -107,7 +107,7 @@ fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @locatio
     out.vpos = vp.xyz;
     // FLIP_SIDED (material BackSide): three invierte la normal en el vertex shader
     let flip = select(1.0, -1.0, (d.w & 32u) != 0u);
-    out.vnormal = mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * nrm * flip;
+    out.vnormal = normalize(mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * nrm) * flip;   // beginnormal/defaultnormal: three normaliza por vertice
     out.uv = uv;
     out.di = di;
     // color_vertex: color de vertice (si el material lo pide) por color de instancia
@@ -281,7 +281,7 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
             let vGrad = sign(fDet) * (dBx * R1 + dBy * R2);
             normal = normalize(abs(fDet) * vN - vGrad);
         }
-        let metalnessFactor = m.misc.x;
+        let metalnessFactor = m.misc.x * select(1.0, sRough.b, (maps & 32u) != 0u);   // metalnessMap comparte textura con roughnessMap (glTF)
         let roughnessFactor = m.emissive.a * select(1.0, sRough.g, (maps & 4u) != 0u);
         var material: PhysMat;
         material.diffuseColor = diffuse * (1.0 - metalnessFactor);
