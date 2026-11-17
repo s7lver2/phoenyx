@@ -1,0 +1,7 @@
+{
+  "name": "phoenix-fidelity",
+  "private": true,
+  "type": "module",
+  "description": "Captura y comparacion de imagenes para medir la fidelidad de Phoenyx frente a three",
+  "dependencies": { "playwright-core": "^1.50.0", "pngjs": "^7.0.0", "pixelmatch": "^6.0.0" }
+}
