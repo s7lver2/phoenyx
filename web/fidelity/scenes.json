@@ -12,5 +12,8 @@
   { "id": "rect", "query": "renderer=@R&scene=rect", "advance": 2, "nota": "RectAreaLight con LTC" },
   { "id": "sombra-spot", "query": "renderer=@R&scene=sombra-spot", "advance": 2, "nota": "linterna con sombra PCFSoft" },
   { "id": "sombra-sol", "query": "renderer=@R&scene=sombra-sol", "advance": 2, "nota": "sol con sombra PCFSoft" },
+  { "id": "sombra-casos", "query": "renderer=@R&scene=sombra-casos", "advance": 2, "nota": "casos limite de sombras" },
+  { "id": "interior", "query": "renderer=@R&scene=interior", "advance": 2, "nota": "linterna con sombra sobre modelos del juego" },
+  { "id": "piscina-sol", "query": "renderer=@R&scene=piscina-sol", "advance": 2, "nota": "sol con sombra sobre modelos e instancias" },
   { "id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces" }
 ]

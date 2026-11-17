@@ -296,13 +296,13 @@ if (sceneId === 'geoms') {
 
 // ---- modelos: GLB reales del juego con GLTFLoader + meshopt ----
 let modelsDone = Promise.resolve();
-if (sceneId === 'modelos') {
+if (sceneId === 'modelos' || sceneId === 'interior' || sceneId === 'piscina-sol') {
   const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
   const items = [
     ['/models/items/bat.glb', -3.2, 0.9, 0.5], ['/models/items/nokia.glb', -1.2, 0.5, 1.0], ['/models/items/locker.glb', 1.4, 1.0, 0.0], ['/models/cosmetics/bicorn_hat.glb', 3.4, 0.5, 1.0],
     ['/models/items/pokeball.glb', -2.2, 0.4, 2.8], ['/models/items/beer.glb', 0.2, 0.7, 3.0],
   ];
-  modelsDone = Promise.all(items.map(async ([url, x, size, z], i) => {
+  modelsDone = Promise.all(items.filter((it) => sceneId === 'modelos' || !it[0].includes('beer')).map(async ([url, x, size, z], i) => {
     const gltf = await loader.loadAsync(url);
     const root = gltf.scene;
     const box = new THREE.Box3().setFromObject(root);
@@ -352,6 +352,78 @@ if (sceneId === 'sombra-spot' || sceneId === 'sombra-sol') {
     scene.add(sun, sun.target);
   }
   scene.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
+}
+
+// ---- casos limite de sombras: BackSide, alphaTest, transparente, receiveShadow falso, instancias y mapa congelado ----
+if (sceneId === 'sombra-casos') {
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  scene.children.find((o) => o.material === mCeil).visible = false;
+  const sun = new THREE.DirectionalLight(0xfff0d8, 2.5);
+  sun.position.set(4, 8, 5);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8, near: 1, far: 30 });
+  sun.shadow.camera.updateProjectionMatrix();
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.04;
+  scene.add(sun, sun.target);
+  const put = (geo, mat, x, y, z) => { const o = new THREE.Mesh(geo, mat); o.position.set(x, y, z); scene.add(o); return o; };
+  // caja con material BackSide (proyecta con las caras delanteras)
+  put(new THREE.BoxGeometry(0.8, 0.8, 0.8), new THREE.MeshStandardMaterial({ color: 0x4080c0, side: THREE.BackSide }), -3.5, 0.4, 2);
+  // reja con alphaTest: solo proyecta el circulo
+  const ring = canvasTex((g, n) => { g.clearRect(0, 0, n, n); g.fillStyle = '#fff'; g.beginPath(); g.arc(n / 2, n / 2, n * 0.4, 0, 7); g.fill(); g.globalCompositeOperation = 'destination-out'; g.beginPath(); g.arc(n / 2, n / 2, n * 0.22, 0, 7); g.fill(); }, 128, true);
+  put(new THREE.PlaneGeometry(1.4, 1.4), new THREE.MeshStandardMaterial({ map: ring, alphaTest: 0.5, side: THREE.DoubleSide, color: 0xe0c0a0 }), -1.5, 1.3, 1.5);
+  // transparente (la sombra es completa)
+  put(new THREE.BoxGeometry(0.8, 1.2, 0.8), new THREE.MeshStandardMaterial({ color: 0xc04040, transparent: true, opacity: 0.4 }), 0.8, 0.6, 2);
+  // instancias
+  const im = new THREE.InstancedMesh(new THREE.BoxGeometry(0.4, 0.9, 0.4), new THREE.MeshStandardMaterial({ color: 0x60a060 }), 3);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 3; i++) { d.position.set(2.6 + i * 0.7, 0.45, 1 - i * 0.6); d.updateMatrix(); im.setMatrixAt(i, d.matrix); }
+  scene.add(im);
+  // receiveShadow = false: un cubo bajo la sombra de la reja que no la recibe
+  const noRecv = put(new THREE.BoxGeometry(0.6, 0.3, 0.6), new THREE.MeshStandardMaterial({ color: 0xd0d0d0 }), -0.4, 0.15, -1);
+  scene.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = o !== noRecv; } });
+  // mapa congelado: se pinta una vez y no se repinta (autoUpdate = false)
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = true;
+}
+
+// ---- interior y piscina con modelos reales del juego proyectando sombra ----
+if (sceneId === 'interior' || sceneId === 'piscina-sol') {
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  if (sceneId === 'interior') {
+    scene.add(new THREE.HemisphereLight(0xfff1c4, 0x3a2c0c, 0.16));
+    const sp = new THREE.SpotLight(0xfff6e0, 90, 22, 0.55, 0.75, 1.2);
+    sp.position.set(0, 1.6, 5.5);
+    sp.target.position.set(0.5, 0.3, 0);
+    sp.castShadow = true;
+    sp.shadow.mapSize.set(2048, 2048);
+    sp.shadow.radius = 4;
+    sp.shadow.camera.near = 0.2;
+    sp.shadow.camera.far = 22;
+    sp.shadow.bias = -0.002;
+    scene.add(sp, sp.target);
+  } else {
+    scene.children.find((o) => o.material === mCeil).visible = false;
+    const sun = new THREE.DirectionalLight(0xfff0d8, 2.5);
+    sun.position.set(-4, 7, 5);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -9, right: 9, top: 9, bottom: -9, near: 1, far: 30 });
+    sun.shadow.camera.updateProjectionMatrix();
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.04;
+    sun.shadow.radius = 3;
+    scene.add(sun, sun.target);
+    // instancias del juego sobre el suelo
+    const dm = new THREE.Object3D();
+    const im = new THREE.InstancedMesh(new THREE.BoxGeometry(0.3, 0.6, 0.3), new THREE.MeshStandardMaterial({ color: 0x80a0c0 }), 6);
+    for (let i = 0; i < 6; i++) { dm.position.set(-2.5 + i * 0.5, 0.3, -2.5 - (i % 2) * 0.6); dm.updateMatrix(); im.setMatrixAt(i, dm.matrix); }
+    scene.add(im);
+  }
+  modelsDone = modelsDone.then(() => scene.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } }));
 }
 
 // contrato de tools/fidelity/capture.mjs
