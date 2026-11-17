@@ -1,5 +1,6 @@
 // WebGLRenderer de Phoenyx: misma API que el de three (la parte que usa el juego), dibujando con phoenyx-gl (WebGPU).
 // @ts-nocheck (usa el JS de three copiado)
+import { UniformsLib } from './three/renderers/shaders/UniformsLib.js';
 import init, { create } from '../pkg/phoenyx_gl.js';
 import { Packer } from './pack';
 import { TextureCache } from './textures';
@@ -41,6 +42,7 @@ export class WebGLRenderer {
   private attrIds = new WeakMap<object, number>();
   private nextAttr = 1;
   private lostReported = false;
+  private ltcDone = false;
   private disposed = false;
 
   constructor(params: { canvas?: HTMLCanvasElement; antialias?: boolean; alpha?: boolean; powerPreference?: string } = {}) {
@@ -179,6 +181,11 @@ export class WebGLRenderer {
     const tm = this.toneMapping === ACESFilmicToneMapping ? 1 : 0;
     if (this.toneMapping !== NoToneMapping && !tm) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
     const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: this.outputColorSpace }, (g) => this.geomId(g), (m) => this.textures.materialKey(m), (o) => this.instInfo(o));
+    // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
+    if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {
+      this.gl.set_ltc(UniformsLib.LTC_FLOAT_1.image.data, UniformsLib.LTC_FLOAT_2.image.data);
+      this.ltcDone = true;
+    }
     this.gl.frame(p.globals, p.objects, p.materials, p.lights, p.draws);
     const err = this.gl.take_error();
     if (err) console.error('[phoenyx] GPU:', err);

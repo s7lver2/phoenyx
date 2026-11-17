@@ -18,6 +18,26 @@ fn entry(b: u32, buf: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 }
 
 
+/// Textura Rgba32Float cuadrada (tablas LTC de RectAreaLight); se lee con textureLoad.
+fn ltc_view(device: &wgpu::Device, queue: &wgpu::Queue, n: u32, data: &[f32]) -> wgpu::TextureView {
+    let t = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        bytemuck::cast_slice(data),
+    );
+    t.create_view(&Default::default())
+}
+
 fn srgb_to_lin(v: u8) -> f32 {
     let c = v as f32 / 255.0;
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
@@ -117,6 +137,8 @@ pub struct Gl {
     bg_desc: HashMap<u32, ([u32; 5], [u32; 5])>,
     bgs: HashMap<u32, wgpu::BindGroup>,
     white: wgpu::TextureView,
+    ltc1: wgpu::TextureView,
+    ltc2: wgpu::TextureView,
     default_sampler: wgpu::Sampler,
     lut: Box<[f32; 256]>,
     globals: wgpu::Buffer,
@@ -203,6 +225,18 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
             st(4, ro, both),
             st(5, ro, both),
             st(6, ro, both),
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                count: None,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                count: None,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            },
         ],
     });
     let tex_entry = |b: u32| wgpu::BindGroupLayoutEntry {
@@ -270,6 +304,8 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         bg_desc: HashMap::new(),
         bgs: HashMap::new(),
         white,
+        ltc1: ltc_view(&device, &queue, 1, &[0.0; 4]),
+        ltc2: ltc_view(&device, &queue, 1, &[0.0; 4]),
         default_sampler,
         lut,
         depth: depth_view(&device, w, h),
@@ -379,6 +415,16 @@ impl Gl {
         }
         self.textures.insert(id, tex.create_view(&Default::default()));
         self.bgs.clear();
+    }
+
+    /// Tablas LTC de RectAreaLight (64x64 RGBA float, las de `RectAreaLightUniformsLib`).
+    pub fn set_ltc(&mut self, ltc1: &[f32], ltc2: &[f32]) {
+        if ltc1.len() < 64 * 64 * 4 || ltc2.len() < 64 * 64 * 4 {
+            return;
+        }
+        self.ltc1 = ltc_view(&self.device, &self.queue, 64, &ltc1[..64 * 64 * 4]);
+        self.ltc2 = ltc_view(&self.device, &self.queue, 64, &ltc2[..64 * 64 * 4]);
+        self.bg = None;
     }
 
     pub fn drop_texture(&mut self, id: u32) {
@@ -621,6 +667,8 @@ impl Gl {
                     entry(4, &self.draws.buf),
                     entry(5, &self.inst_mats.buf),
                     entry(6, &self.inst_cols.buf),
+                    wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&self.ltc1) },
+                    wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.ltc2) },
                 ],
             }));
         }

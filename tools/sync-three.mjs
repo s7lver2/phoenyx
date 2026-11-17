@@ -15,7 +15,7 @@ for (const dir of ['lights']) for (const f of fs.readdirSync(path.join(src, dir)
 // todas las geometrias, texturas, curvas, formas y los cargadores de imagen
 for (const dir of ['geometries', 'textures', 'extras/curves']) for (const f of fs.readdirSync(path.join(src, dir))) if (f.endsWith('.js') && f !== 'Geometries.js' && f !== 'Curves.js') entries.push(`${dir}/${f}`);
 for (const f of ['extras/core/Shape.js', 'extras/core/Path.js', 'extras/core/CurvePath.js', 'extras/core/Curve.js', 'extras/ShapeUtils.js', 'extras/DataUtils.js', 'loaders/TextureLoader.js', 'loaders/ImageLoader.js', 'loaders/FileLoader.js', 'loaders/ImageBitmapLoader.js', 'loaders/LoadingManager.js', 'loaders/Cache.js', 'loaders/Loader.js', 'loaders/LoaderUtils.js', 'loaders/MaterialLoader.js', 'core/InterleavedBuffer.js', 'core/InterleavedBufferAttribute.js']) entries.push(f);
-entries.push('constants.js', 'utils.js');
+entries.push('constants.js', 'utils.js', 'renderers/shaders/UniformsLib.js');
 
 const seen = new Set();
 const visit = (rel) => {

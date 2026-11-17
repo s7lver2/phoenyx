@@ -33,7 +33,7 @@ struct Mat {
 };
 
 struct Light {
-    a: vec4<f32>,        // x tipo (0 direccional, 1 puntual, 2 hemisferio, 3 foco), yzw color * intensidad (hemisferio: cielo)
+    a: vec4<f32>,        // x tipo (0 direccional, 1 puntual, 2 hemisferio, 3 foco, 4 area rectangular), yzw color * intensidad (hemisferio: cielo)
     b: vec4<f32>,        // xyz posicion (vista; hemisferio: color del suelo), w distancia de corte
     c: vec4<f32>,        // x decaimiento, yzw direccion hacia la luz (vista; foco: eje desde el objetivo)
     d: vec4<f32>,        // foco: x cos(angle), y cos(angle * (1 - penumbra))
@@ -180,6 +180,64 @@ struct PhysMat {
     specularF90: f32,
 };
 
+// ---- RectAreaLight: tablas LTC (lights_physical_pars_fragment), muestreadas con bilinear a mano (Rgba32Float no filtrable) ----
+@group(0) @binding(7) var ltc_1: texture_2d<f32>;
+@group(0) @binding(8) var ltc_2: texture_2d<f32>;
+
+fn ltcSample(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let p = uv * 64.0 - 0.5;
+    let f = fract(p);
+    let i = vec2<i32>(floor(p));
+    let a = textureLoad(t, clamp(i, vec2<i32>(0), vec2<i32>(63)), 0);
+    let b = textureLoad(t, clamp(i + vec2<i32>(1, 0), vec2<i32>(0), vec2<i32>(63)), 0);
+    let c = textureLoad(t, clamp(i + vec2<i32>(0, 1), vec2<i32>(0), vec2<i32>(63)), 0);
+    let d = textureLoad(t, clamp(i + vec2<i32>(1, 1), vec2<i32>(0), vec2<i32>(63)), 0);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+fn LTC_Uv(N: vec3<f32>, V: vec3<f32>, roughness: f32) -> vec2<f32> {
+    let LUT_SIZE = 64.0;
+    let LUT_SCALE = (LUT_SIZE - 1.0) / LUT_SIZE;
+    let LUT_BIAS = 0.5 / LUT_SIZE;
+    let dotNV = saturate(dot(N, V));
+    return vec2<f32>(roughness, sqrt(1.0 - dotNV)) * LUT_SCALE + LUT_BIAS;
+}
+
+fn LTC_ClippedSphereFormFactor(f: vec3<f32>) -> f32 {
+    let l = length(f);
+    return max((l * l + f.z) / (l + 1.0), 0.0);
+}
+
+fn LTC_EdgeVectorFormFactor(v1: vec3<f32>, v2: vec3<f32>) -> vec3<f32> {
+    let x = dot(v1, v2);
+    let y = abs(x);
+    let a = 0.8543985 + (0.4965155 + 0.0145206 * y) * y;
+    let b = 3.4175940 + (4.1616724 + y) * y;
+    let v = a / b;
+    let theta_sintheta = select(0.5 * inverseSqrt(max(1.0 - x * x, 1e-7)) - v, v, x > 0.0);
+    return cross(v1, v2) * theta_sintheta;
+}
+
+fn LTC_Evaluate(N: vec3<f32>, V: vec3<f32>, P: vec3<f32>, mInv: mat3x3<f32>, r0: vec3<f32>, r1: vec3<f32>, r2: vec3<f32>, r3: vec3<f32>) -> vec3<f32> {
+    let v1 = r1 - r0;
+    let v2 = r3 - r0;
+    let lightNormal = cross(v1, v2);
+    if (dot(lightNormal, P - r0) < 0.0) { return vec3<f32>(0.0); }
+    let T1 = normalize(V - N * dot(V, N));
+    let T2 = -cross(N, T1);
+    let mt = mInv * transpose(mat3x3<f32>(T1, T2, N));
+    let c0 = normalize(mt * (r0 - P));
+    let c1 = normalize(mt * (r1 - P));
+    let c2 = normalize(mt * (r2 - P));
+    let c3 = normalize(mt * (r3 - P));
+    var vff = vec3<f32>(0.0);
+    vff += LTC_EdgeVectorFormFactor(c0, c1);
+    vff += LTC_EdgeVectorFormFactor(c1, c2);
+    vff += LTC_EdgeVectorFormFactor(c2, c3);
+    vff += LTC_EdgeVectorFormFactor(c3, c0);
+    return vec3<f32>(LTC_ClippedSphereFormFactor(vff));
+}
+
 // BRDF_GGX
 fn BRDF_GGX(lightDir: vec3<f32>, viewDir: vec3<f32>, normal: vec3<f32>, material: PhysMat) -> vec3<f32> {
     let f0 = material.specularColor;
@@ -305,6 +363,24 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
             let l = lights[i];
             var dirL: vec3<f32>;
             var col = l.a.yzw;
+            if (l.a.x > 3.5) {
+                // RE_Direct_RectArea_Physical
+                let lightPos = l.b.xyz;
+                let halfWidth = l.c.yzw;
+                let halfHeight = l.d.xyz;
+                let r0 = lightPos + halfWidth - halfHeight;
+                let r1 = lightPos - halfWidth - halfHeight;
+                let r2 = lightPos - halfWidth + halfHeight;
+                let r3 = lightPos + halfWidth + halfHeight;
+                let uvL = LTC_Uv(normal, geometryViewDir, material.roughness);
+                let t1 = ltcSample(ltc_1, uvL);
+                let t2 = ltcSample(ltc_2, uvL);
+                let mInv = mat3x3<f32>(vec3<f32>(t1.x, 0.0, t1.y), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(t1.z, 0.0, t1.w));
+                let fresnel = material.specularColor * t2.x + (vec3<f32>(1.0) - material.specularColor) * t2.y;
+                directSpecular += l.a.yzw * fresnel * LTC_Evaluate(normal, geometryViewDir, geometryPosition, mInv, r0, r1, r2, r3);
+                directDiffuse += l.a.yzw * material.diffuseColor * LTC_Evaluate(normal, geometryViewDir, geometryPosition, mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0)), r0, r1, r2, r3);
+                continue;
+            }
             if (l.a.x > 1.5 && l.a.x < 2.5) {
                 // getHemisphereLightIrradiance (geometryNormal = normal tras los mapas)
                 let hemiW = 0.5 * dot(normal, l.c.yzw) + 0.5;

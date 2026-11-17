@@ -1,6 +1,7 @@
 // Sala de prueba de la fase 1, escrita solo con la API de three. Se empaqueta dos veces (three real y phoenyx): ver tools/fidelity/build-harness.mjs.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
 const q = new URLSearchParams(location.search);
@@ -129,6 +130,17 @@ if (sceneId === 'luces') {
   sp.position.set(-1, 2.2, 4);
   sp.target.position.set(1, 0, -3);
   scene.add(sp, sp.target);
+}
+
+if (sceneId === 'rect') {
+  // tres paneles rectangulares como los de la piscina (1,1 x 0,28), de cara al suelo
+  RectAreaLightUniformsLib.init();
+  [[-2.5, 0], [0, 0], [2.5, 0]].forEach(([x, z], i) => {
+    const r = new THREE.RectAreaLight(i === 1 ? 0xffd0a0 : 0xfff0d8, 6, 1.1, 0.28);
+    r.position.set(x, 1.6, z + 1);
+    r.rotation.x = -Math.PI / 2;
+    scene.add(r);
+  });
 }
 
 // objeto anidado: grupo rotado y escalado con tres cubos

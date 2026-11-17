@@ -69,6 +69,8 @@ export class Packer {
   private frustum = new Frustum();
   private projScreen = new Matrix4();
   private mv = new Matrix4();
+  private m4 = new Matrix4();
+  private m42 = new Matrix4();
   private nm = new Matrix3();
   private v = new Vector3();
   private opaque: Item[] = [];
@@ -187,7 +189,7 @@ export class Packer {
     let count = 0;
     // orden de lights_fragment_begin: puntuales, focos, direccionales; el hemisferio y el ambiente van al final (indirecto)
     const hemi: number[] = [];
-    for (const type of ['point', 'spot', 'directional', 'rest']) {
+    for (const type of ['point', 'spot', 'rect', 'directional', 'rest']) {
       for (const l of this.lights) {
         const k = l.intensity;
         if (type === 'rest') {
@@ -197,7 +199,7 @@ export class Packer {
             // la direccion es la posicion de la luz (y arriba por defecto) en vista, como WebGLLights
             v.setFromMatrixPosition(l.matrixWorld).transformDirection(view);
             hemi.push(2, l.color.r * k, l.color.g * k, l.color.b * k, l.groundColor.r * k, l.groundColor.g * k, l.groundColor.b * k, 0, 0, v.x, v.y, v.z, 0, 0, 0, 0);
-          } else if (!l.isPointLight && !l.isSpotLight && !l.isDirectionalLight) warnOnce(l.type, `la luz ${l.type} aun no esta soportada y se ignora`);
+          } else if (!l.isPointLight && !l.isSpotLight && !l.isDirectionalLight && !l.isRectAreaLight) warnOnce(l.type, `la luz ${l.type} aun no esta soportada y se ignora`);
         } else if (type === 'point' && l.isPointLight) {
           if (count++ >= MAX_LIGHTS) continue;
           v.setFromMatrixPosition(l.matrixWorld).applyMatrix4(view);
@@ -211,6 +213,14 @@ export class Packer {
           const t = new Vector3().setFromMatrixPosition(l.target.matrixWorld);
           v.sub(t).transformDirection(view);
           lightData.push(3, l.color.r * k, l.color.g * k, l.color.b * k, px, py, pz, l.distance, l.decay, v.x, v.y, v.z, Math.cos(l.angle), Math.cos(l.angle * (1 - l.penumbra)), 0, 0);
+        } else if (type === 'rect' && l.isRectAreaLight) {
+          if (count++ >= MAX_LIGHTS) continue;
+          // posicion, medio ancho y medio alto en vista (WebGLLights: rotacion de la matriz de vista x matrixWorld)
+          this.m4.copy(l.matrixWorld).premultiply(view);
+          this.m42.extractRotation(this.m4);
+          v.setFromMatrixPosition(this.m4);
+          const hw = new Vector3(l.width * 0.5, 0, 0).applyMatrix4(this.m42), hh = new Vector3(0, l.height * 0.5, 0).applyMatrix4(this.m42);
+          lightData.push(4, l.color.r * k, l.color.g * k, l.color.b * k, v.x, v.y, v.z, 0, 0, hw.x, hw.y, hw.z, hh.x, hh.y, hh.z, 0);
         } else if (type === 'directional' && l.isDirectionalLight) {
           if (count++ >= MAX_LIGHTS) continue;
           v.setFromMatrixPosition(l.matrixWorld);
