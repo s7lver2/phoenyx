@@ -1,0 +1,5 @@
+loaders/GLTFLoader.js
+libs/meshopt_decoder.module.js
+utils/BufferGeometryUtils.js
+geometries/DecalGeometry.js
+utils/SkeletonUtils.js
