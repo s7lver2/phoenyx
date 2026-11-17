@@ -42,5 +42,6 @@
   {"id": "sh-vhs", "query": "renderer=@R&scene=sh-vhs&fog=exp", "advance": 2, "nota": "FilmShader y VhsShader del juego tras OutputPass, tiempo fijo; el grano por pixel no se iguala bit a bit: se compara con compare.mjs --box 16"},
   { "id": "sh-waterjet", "query": "renderer=@R&scene=sh-waterjet&fog=exp", "advance": 2, "nota": "WaterJet del juego: Points con gl_PointSize y gl_PointCoord" },
   { "id": "sh-parking-atm", "query": "renderer=@R&scene=sh-parking-atm&fog=exp", "advance": 2, "nota": "niebla volumetrica y haz del parking, vistos desde fuera" },
-  { "id": "sh-parking-atm-dentro", "query": "renderer=@R&scene=sh-parking-atm&inside=1&fog=exp", "advance": 2, "nota": "la camara dentro del volumen de niebla (gl_FrontFacing y marcha de rayos)" }
+  { "id": "sh-parking-atm-dentro", "query": "renderer=@R&scene=sh-parking-atm&inside=1&fog=exp", "advance": 2, "nota": "la camara dentro del volumen de niebla (gl_FrontFacing y marcha de rayos)" },
+  { "id": "sh-remote", "query": "renderer=@R&scene=sh-remote&fog=exp", "advance": 2, "nota": "haces de linterna de jugadores remotos: aditivo, doble cara, normalMatrix" }
 ]

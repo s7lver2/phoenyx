@@ -171,6 +171,7 @@ fn user_src(id: u32) -> Option<(String, bool)> {
         2 => (include_str!("user/parking_fog.wgsl").replace("@N@", "4"), false),
         3 => (include_str!("user/parking_fog.wgsl").replace("@N@", "10"), false),
         4 => (include_str!("user/parking_shaft.wgsl").to_string(), false),
+        5 => (include_str!("user/remote_beam.wgsl").to_string(), false),
         _ => return None,
     })
 }

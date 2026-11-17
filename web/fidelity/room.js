@@ -13,6 +13,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { makePrueba } from './games/prueba.js';
 import { makeJet } from './games/waterjet.js';
+import { makeRemoteBeams } from './games/remoteBeams.js';
 import { makeParkingAtmosphere } from './games/parkingAtmosphere.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -597,6 +598,17 @@ if (sceneId === 'sh-parking-atm') {
   scene.add(makeParkingAtmosphere(THREE, true, { x: 2.2, y: 0, z: -1.5, time: 7.9, power: 0.6 }));
   // la camara dentro del primer volumen: la niebla se ve por dentro
   if (q.get('inside') === '1') camera.position.set(-1.4, 1.6, 1.8);
+}
+
+// ---- escena 'sh-remote': los haces de linterna de dos jugadores remotos (uno apagado a medias), aditivos y de doble cara ----
+if (sceneId === 'sh-remote') {
+  const a = makeRemoteBeams(THREE, { t: 2.6, on: 9 });
+  a.position.set(-2.4, 1.3, 2.5);
+  a.rotation.y = 0.5;
+  const b = makeRemoteBeams(THREE, { t: 5.1, on: 5 });
+  b.position.set(2.2, 1.0, 1.5);
+  b.rotation.set(0.2, -0.6, 0);
+  scene.add(a, b);
 }
 
 // ---- escena 'sh-vhs': RenderPass -> OutputPass -> FilmShader -> VhsShader del juego, con el tiempo fijo ----
