@@ -61,4 +61,4 @@ Con un submit por pase, `ao` costaba 9 ms y `pool-fx` 4,3 ms a 1x; grabar todos 
 - Sin resolver de fases anteriores: `MeshPhysicalMaterial` con `transmission` (fase 6), wireframe, `envMap`, `Points`/`Sprite`/`Line` y sombras de `SkinnedMesh` (fase 5), sombras de `PointLight` y `VSMShadowMap`.
 
 ## Revisión final (Sonnet) y correcciones
-(pendiente)
+Sin hallazgos Críticos ni Importantes; los 5 puntos del Review Focus (resize, `enabled`/`removePass`, `render` a RT durante el composer, feedback, fondo/alpha) son correctos y el batching de pases no tiene caminos que lean o escriban entre grabar y enviar. Aplazados (menores): un RT usado como `map` antes de su primer render se ve blanco (three: negro), oyentes `dispose` acumulados por recreación, `clear()` pendiente consumido por un pase de pantalla (profundidad), pipelines de pase creados en el primer uso, `blendOf` sin Multiply/Subtractive. Pendiente para las fases 6/7: `WebGLRenderer` aún no tiene `getDrawingBufferSize`, `getContext`, `forceContextLoss` ni `compile`, que el juego llama.
