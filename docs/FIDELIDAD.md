@@ -3,7 +3,7 @@
 Herramientas en `tools/fidelity/` (Node 22, Chrome instalado). Instalación: `npm install` dentro de esa carpeta.
 
 ## Requisitos en Backrooms
-Rama `phoenyx-migracion`. El juego en desarrollo (`npm run dev` en `client`, puerto 5190) tiene un modo `?capture` que congela la semilla y el reloj (`client/src/dev/capture.ts`) y una lista de escenas (`client/src/dev/scenes.json`). Solo funciona en desarrollo local.
+Rama `phoenyx-migracion`. El juego en desarrollo (`npm run dev` en `client`, puerto 5190) tiene un modo `?capture` que congela la semilla y el reloj (`client/src/dev/capture.ts`) y una lista de escenas (`client/src/dev/scenes.json`). Solo funciona en desarrollo local. Parte de los ajustes de fábrica más el preajuste elegido, sin tocar los guardados del navegador; congela también `new Date()`, desactiva la resolución dinámica y la captura pulsa PLAY sola cuando hace falta.
 
 ## Capturar
 ```
@@ -30,10 +30,12 @@ Por escena: `<out>/<escena>-diff.png` (gris = error por 8; rojo = píxel de inte
 | `>8` | píxeles con error mayor que 8 |
 | `>8 int.` | los mismos, sin contar los que están a 2 px o menos de un contorno |
 
+Opciones extra de `compare.mjs`: `--mean` y `--pixel` (umbrales). Los bordes se calculan solo sobre la imagen A. Opciones extra de `capture.mjs`: `--scenes` (otro scenes.json) y `--chrome` (ruta del navegador). `capture.mjs` borra la captura anterior de cada escena antes de repetirla.
+
 Umbral de aprobado: `media` < 1 y `>8 int.` = 0. Los contornos se miden aparte porque el antialiasing de WebGL y el de WebGPU no coinciden bit a bit.
 
 ## Suelo de ruido
-Dos pasadas con three de la misma escena no son idénticas bit a bit: tras fijar semilla y reloj y esperar la carga, el error máximo es de 2/255 y la media de 0,001. Los resultados de Phoenyx se juzgan sobre ese suelo.
+Dos pasadas con three de la misma escena (nivel 0 y Poolrooms comprobadas tras fijar semilla, reloj, `Date` y el punto de arranque) dan error 0: son idénticas bit a bit en el mismo equipo. Antes de esos arreglos el máximo era 2/255. Otro equipo o GPU puede dar pequeñas diferencias propias del hardware.
 
 ## Limitaciones conocidas
 - Parking no está en las escenas: solo se llega por sala multijugador (necesita servidor).

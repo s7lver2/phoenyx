@@ -113,7 +113,7 @@ for (const id of ids) {
   if (!ok) failed++;
 }
 fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ a: A, b: B, mean_max: MEAN_MAX, pixel_max: PIXEL_MAX, report }, null, 2));
-console.log('escena'.padEnd(18), 'media'.padStart(8), 'p99'.padStart(5), 'max'.padStart(5), '>8'.padStart(8), '>8 int.'.padStart(8), ' resultado');
+console.log('escena'.padEnd(18), 'media'.padStart(8), 'p99'.padStart(5), 'max'.padStart(5), `>${PIXEL_MAX}`.padStart(8), `>${PIXEL_MAX} int.`.padStart(8), ' resultado');
 for (const [id, r] of Object.entries(report))
   console.log(id.padEnd(18), String(r.mean ?? '-').padStart(8), String(r.p99 ?? '-').padStart(5), String(r.max ?? '-').padStart(5), String(r.pixelsOver8 ?? '-').padStart(8), String(r.pixelsOver8Interior ?? '-').padStart(8), ' ', r.ok ? 'ok' : `FALLA${r.error ? ' (' + r.error + ')' : ''}`);
 process.exit(failed ? 1 : 0);
