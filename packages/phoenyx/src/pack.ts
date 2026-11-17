@@ -89,6 +89,10 @@ export class Packer {
   private transparent: Item[] = [];
   private lights: any[] = [];
   private sLayers = 0;
+  /** capa de mapa de sombra estable por luz (una luz que desaparece no desplaza a las demas) */
+  private layerOf = new Map<any, number>();
+  /** repintar todos los mapas el proximo fotograma (el anterior no llego a dibujarse) */
+  forceShadows = false;
   private sSize = 0;
 
   pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null): Packed {
@@ -149,14 +153,30 @@ export class Packer {
         else warnOnce('maxshadows', `hay mas de ${MAX_SHADOWS} luces con sombra: sobran`);
       }
     }
-    const shadowRan = sh.enabled && this.lights.length > 0 && (sh.autoUpdate || sh.needsUpdate);
-    let sLayers = Math.max(this.sLayers, shadowLights.length), sSize = this.sSize;
+    // capas estables: las luces que siguen conservan su capa; las nuevas toman una libre y se pintan aunque no lo pidan sus banderas
+    for (const l of [...this.layerOf.keys()]) if (!shadowLights.includes(l)) this.layerOf.delete(l);
+    const fresh = new Set<any>();
+    for (const l of shadowLights) {
+      if (this.layerOf.has(l)) continue;
+      const used = new Set(this.layerOf.values());
+      let c = 0;
+      while (used.has(c)) c++;
+      this.layerOf.set(l, c);
+      fresh.add(l);
+    }
+    const nLayers = shadowLights.reduce((n, l) => Math.max(n, this.layerOf.get(l)! + 1), 0);
+    // como WebGLShadowMap.render: sin luces con sombra no se hace nada (y needsUpdate se conserva)
+    const shadowRan = sh.enabled && shadowLights.length > 0 && (sh.autoUpdate || sh.needsUpdate);
+    let sSize = this.sSize;
     for (const l of shadowLights) sSize = Math.max(sSize, l.shadow.mapSize.x, l.shadow.mapSize.y);
+    const sLayers = Math.max(this.sLayers, nLayers);
     const shadowAlloc: [number, number] | null = shadowLights.length && (sLayers !== this.sLayers || sSize !== this.sSize) ? [sLayers, sSize] : null;
     if (shadowAlloc) (this.sLayers = sLayers, this.sSize = sSize);
+    // un mapa recien reservado esta vacio (profundidad 0 = todo en sombra): se pinta siempre
+    const force = shadowLights.length > 0 && (this.forceShadows || !!shadowAlloc);
+    this.forceShadows = false;
     const shadowCasters: Array<Array<{ object: any; geometry: any; material: any; group: any }> | null> = shadowLights.map((l) => {
-      // un mapa nuevo (reservado de nuevo) se repinta aunque la luz no lo pida: su contenido se perdio
-      if (!shadowRan || !(shadowAlloc || l.shadow.autoUpdate || l.shadow.needsUpdate)) return null;
+      if (!force && !fresh.has(l) && !(shadowRan && (l.shadow.autoUpdate || l.shadow.needsUpdate))) return null;
       l.shadow.updateMatrices(l);
       const out: Array<{ object: any; geometry: any; material: any; group: any }> = [];
       this.collectCasters(scene, camera, l.shadow.getFrustum(), out);
@@ -225,11 +245,12 @@ export class Packer {
 
     // dibujos de las pasadas de sombras, a continuacion de los de la escena (comparten buffers de objetos, geometrias y materiales)
     const mainDraws = draws.length / 12;
-    const shadowData = new Float32Array(Math.max(1, shadowLights.length) * SHADOW_F);
+    const shadowData = new Float32Array(Math.max(1, nLayers) * SHADOW_F);
     const shadowPasses: number[] = [];
-    shadowLights.forEach((l, layer) => {
+    shadowLights.forEach((l, li) => {
+      const layer = this.layerOf.get(l)!;
       const shadow = l.shadow;
-      const casters = shadowCasters[layer];
+      const casters = shadowCasters[li];
       const vp = new Matrix4().multiplyMatrices(shadow.camera.projectionMatrix, shadow.camera.matrixWorldInverse);
       const b = layer * SHADOW_F;
       shadowData.set(shadow.matrix.elements, b);
@@ -267,6 +288,8 @@ export class Packer {
       shadow.needsUpdate = false;
     });
 
+    if (draws.length / 12 > 65536) warnOnce('maxdraws', 'mas de 65536 dibujos entre escena y sombras: los sobrantes no se pintan');
+
     // luces: puntuales primero y luego direccionales (el orden de los bucles de lights_fragment_begin)
     const view = camera.matrixWorldInverse;
     const lightData: number[] = [];
@@ -298,7 +321,7 @@ export class Packer {
           v.setFromMatrixPosition(l.matrixWorld);
           const t = new Vector3().setFromMatrixPosition(l.target.matrixWorld);
           v.sub(t).transformDirection(view);
-          lightData.push(3, l.color.r * k, l.color.g * k, l.color.b * k, px, py, pz, l.distance, l.decay, v.x, v.y, v.z, Math.cos(l.angle), Math.cos(l.angle * (1 - l.penumbra)), shadowLights.indexOf(l) + 1, 0);
+          lightData.push(3, l.color.r * k, l.color.g * k, l.color.b * k, px, py, pz, l.distance, l.decay, v.x, v.y, v.z, Math.cos(l.angle), Math.cos(l.angle * (1 - l.penumbra)), (this.layerOf.get(l) ?? -1) + 1, 0);
         } else if (type === 'rect' && l.isRectAreaLight) {
           if (count++ >= MAX_LIGHTS) continue;
           // posicion, medio ancho y medio alto en vista (WebGLLights: rotacion de la matriz de vista x matrixWorld)
@@ -312,7 +335,7 @@ export class Packer {
           v.setFromMatrixPosition(l.matrixWorld);
           const t = new Vector3().setFromMatrixPosition(l.target.matrixWorld);
           v.sub(t).transformDirection(view);
-          lightData.push(0, l.color.r * k, l.color.g * k, l.color.b * k, 0, 0, 0, 0, 0, v.x, v.y, v.z, 0, 0, shadowLights.indexOf(l) + 1, 0);
+          lightData.push(0, l.color.r * k, l.color.g * k, l.color.b * k, 0, 0, 0, 0, 0, v.x, v.y, v.z, 0, 0, (this.layerOf.get(l) ?? -1) + 1, 0);
         }
       }
     }
@@ -348,7 +371,7 @@ export class Packer {
     g[48] = 0;
     g[51] = camera.isOrthographicCamera ? 1 : 0;
     g[50] = Math.min(count, MAX_LIGHTS);
-    g[56] = shadowLights.length;
+    g[56] = nLayers;
     g[57] = st.shadow.type === 3 ? 2 : st.shadow.type;
 
     return {
@@ -357,7 +380,7 @@ export class Packer {
       shadows: shadowData,
       shadowPasses: new Uint32Array(shadowPasses),
       shadowAlloc,
-      shadowRan,
+      shadowRan: shadowRan || force || fresh.size > 0,
       materials: new Float32Array(matData),
       lights: new Float32Array(lightData),
       draws: new Uint32Array(draws),

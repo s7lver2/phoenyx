@@ -1,0 +1,40 @@
+{
+  "url": "http://localhost:5200/fidelity",
+  "preset": "high",
+  "throttle": 1,
+  "perf": {
+    "sombra-spot": {
+      "drawCalls": 36,
+      "triangles": 1818,
+      "geometries": 20,
+      "textures": 1,
+      "frameMsMedian": 0.5,
+      "frameMsP95": 0.7,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "interior": {
+      "drawCalls": 46,
+      "triangles": 44038,
+      "geometries": 25,
+      "textures": 10,
+      "frameMsMedian": 0.6,
+      "frameMsP95": 0.8,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "piscina-sol": {
+      "drawCalls": 51,
+      "triangles": 45966,
+      "geometries": 25,
+      "textures": 10,
+      "frameMsMedian": 0.6,
+      "frameMsP95": 0.9,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    }
+  }
+}

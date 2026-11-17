@@ -724,9 +724,9 @@ impl Gl {
 
     /// Dibuja un fotograma. Los formatos de los arrays: ver docs/FASE1.md.
     /// `draws`: 12 u32 por dibujo `[geometria, objeto, material, flags, primer indice, n indices, clave de texturas, malla instanciada (u32::MAX si no), n instancias, primera instancia, 0, 0]`, ya en el orden final de pintado.
-    pub fn frame(&mut self, globals: &[f32], objects: &[f32], materials: &[f32], lights: &[f32], draws: &[u32], shadows: &[f32], shadow_passes: &[u32], main_draws: u32) {
+    pub fn frame(&mut self, globals: &[f32], objects: &[f32], materials: &[f32], lights: &[f32], draws: &[u32], shadows: &[f32], shadow_passes: &[u32], main_draws: u32) -> bool {
         if globals.len() < GLOBALS_F {
-            return;
+            return false;
         }
         self.clear = [globals[44] as f64, globals[45] as f64, globals[46] as f64, globals[47] as f64];
         self.queue.write_buffer(&self.globals, 0, bytemuck::cast_slice(&globals[..GLOBALS_F]));
@@ -799,7 +799,7 @@ impl Gl {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             _ => {
                 self.surface.configure(&self.device, &self.cfg);
-                return;
+                return false;
             }
         };
         let view = frame.texture.create_view(&Default::default());
@@ -881,5 +881,6 @@ impl Gl {
         }
         self.queue.submit([enc.finish()]);
         self.stats = [(nmain / 12) as f32, tris as f32, 0.0];
+        true
     }
 }

@@ -189,8 +189,10 @@ export class WebGLRenderer {
       this.ltcDone = true;
     }
     if (p.shadowAlloc) this.gl.set_shadow_maps(p.shadowAlloc[0], p.shadowAlloc[1]);
-    this.gl.frame(p.globals, p.objects, p.materials, p.lights, p.draws, p.shadows, p.shadowPasses, p.nDraws);
-    if (p.shadowRan) this.shadowMap.needsUpdate = false;
+    // si el fotograma no llega a dibujarse (superficie perdida, cambio de tamano) los mapas quedan sin pintar: se repintan en el siguiente
+    if (this.gl.frame(p.globals, p.objects, p.materials, p.lights, p.draws, p.shadows, p.shadowPasses, p.nDraws)) {
+      if (p.shadowRan) this.shadowMap.needsUpdate = false;
+    } else this.packer.forceShadows = true;
     const err = this.gl.take_error();
     if (err) console.error('[phoenyx] GPU:', err);
     this.info.render.calls += p.nDraws;
