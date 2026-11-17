@@ -1,6 +1,7 @@
 // Registro de los shaders de pase de three 0.160.1 portados a WGSL (post.wgsl). Cada uno se identifica por su GLSL original.
 // @ts-nocheck (usa el JS de three copiado)
 import { CopyShader } from './jsm/shaders/CopyShader.js';
+import { SMAAEdgesShader, SMAAWeightsShader, SMAABlendShader } from './jsm/shaders/SMAAShader.js';
 import { OutputShader } from './jsm/shaders/OutputShader.js';
 import { LuminosityHighPassShader } from './jsm/shaders/LuminosityHighPassShader.js';
 import { UnrealBloomPass } from './jsm/postprocessing/UnrealBloomPass.js';
@@ -56,3 +57,20 @@ registerPassShader(bloom.compositeMaterial.fragmentShader, {
   },
 });
 bloom.dispose();
+
+// ids 5 a 7: SMAAPass (bordes, pesos y mezcla); la resolucion es 1/ancho, 1/alto
+registerPassShader(SMAAEdgesShader.fragmentShader, {
+  id: 5,
+  tex: ['tDiffuse'],
+  pack: (m) => [m.uniforms.resolution.value.x, m.uniforms.resolution.value.y, parseFloat(m.defines.SMAA_THRESHOLD), 0],
+});
+registerPassShader(SMAAWeightsShader.fragmentShader, {
+  id: 6,
+  tex: ['tDiffuse', 'tArea', 'tSearch'],
+  pack: (m) => [m.uniforms.resolution.value.x, m.uniforms.resolution.value.y, 0, 0],
+});
+registerPassShader(SMAABlendShader.fragmentShader, {
+  id: 7,
+  tex: ['tDiffuse', 'tColor'],
+  pack: (m) => [m.uniforms.resolution.value.x, m.uniforms.resolution.value.y, 0, 0],
+});

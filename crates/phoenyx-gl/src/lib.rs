@@ -935,6 +935,9 @@ impl Gl {
             2 => "fs_lum",
             3 => "fs_blur",
             4 => "fs_bloom",
+            5 => "fs_smaa_edges",
+            6 => "fs_smaa_weights",
+            7 => "fs_smaa_blend",
             _ => return false,
         };
         let mut bl = [0u32; 7];

@@ -44,6 +44,7 @@ for (const s of scenes) {
     }
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
+    if (process.argv.includes('--console')) page.on('console', (m) => console.log(`  [${s.id}] ${m.type()}: ${m.text()}`));
     await page.goto(`${base}/?${s.query.replaceAll('@R', renderer)}&preset=${preset}`);
     const ready = () => page.evaluate(() => !!window.__capture?.ready);
     // Algunas escenas arrancan solas (&pool, &suites); las demas piden pulsar PLAY (una vez, cuando aparece el menu).

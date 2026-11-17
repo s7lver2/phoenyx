@@ -6,6 +6,8 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -511,6 +513,34 @@ if (sceneId === 'bloom' || sceneId === 'bloom-fuerte' || sceneId === 'bloom-cero
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
   draw = () => composer.render(0);
+}
+
+// ---- escena 'smaa': bordes inclinados con RenderPass -> OutputPass -> SMAAPass (como el juego en las Poolrooms) ----
+if (sceneId.startsWith('smaa')) {
+  [[-1.6, 0.4], [0.2, -0.3], [1.5, 0.9]].forEach(([x, r], i) => {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.4, 0.7), new THREE.MeshStandardMaterial({ color: 0xe0e0d0, roughness: 0.6 }));
+    b.position.set(x, 0.7, 0.5 - i * 0.8);
+    b.rotation.set(0.2 * i, r, 0.35 - 0.2 * i);
+    scene.add(b);
+  });
+  const composer = new EffectComposer(renderer);
+  composer.setPixelRatio(1);
+  composer.setSize(1280, 720);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new OutputPass());
+  const smaa = new SMAAPass(1280, 720);
+  composer.addPass(smaa);
+  draw = () => composer.render(0);
+  if (sceneId !== 'smaa') {
+    // depuracion: muestra el RT intermedio del SMAA tal cual
+    const dbg = new FullScreenQuad(new THREE.ShaderMaterial({ uniforms: { tDiffuse: { value: null }, opacity: { value: 1 } }, vertexShader: CopyShader.vertexShader, fragmentShader: CopyShader.fragmentShader }));
+    draw = () => {
+      composer.render(0);
+      dbg.material.uniforms.tDiffuse.value = sceneId === 'smaa-area' ? smaa.areaTexture : sceneId === 'smaa-search' ? smaa.searchTexture : (sceneId === 'smaa-edges' ? smaa.edgesRT : smaa.weightsRT).texture;
+      renderer.setRenderTarget(null);
+      dbg.render(renderer);
+    };
+  }
 }
 
 // contrato de tools/fidelity/capture.mjs

@@ -225,6 +225,8 @@ export class WebGLRenderer {
   /** Ejecuta un ShaderMaterial de pantalla completa (lo que dibuja FullScreenQuad de los pases) con su WGSL portado. */
   private renderPass(m: any) {
     this.syncTarget();
+    // como render(): con autoClear el destino se limpia antes de dibujar (SMAAPass depende de ello: sus bordes sin borde se descartan)
+    if (this.autoClear) this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
     const def = passShaderOf(m);
     if (!def) {
       warnOnce('pass:' + (m.name || m.uuid), 'ShaderMaterial de pase sin version WGSL: se copia la entrada');
