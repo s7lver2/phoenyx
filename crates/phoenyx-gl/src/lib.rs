@@ -930,6 +930,7 @@ impl Gl {
     pub fn pass(&mut self, shader: u32, uniforms: &[f32], blend: &[u32], tex: &[u32]) -> bool {
         let entry = match shader {
             0 => "fs_copy",
+            1 => "fs_output",
             _ => return false,
         };
         let mut bl = [0u32; 7];

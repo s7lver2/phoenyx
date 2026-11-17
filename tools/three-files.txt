@@ -76,3 +76,4 @@ materials/MeshNormalMaterial.js
 renderers/WebGLRenderTarget.js
 core/RenderTarget.js
 renderers/shaders/UniformsUtils.js
+materials/RawShaderMaterial.js

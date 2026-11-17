@@ -46,3 +46,61 @@ fn fs_copy(in: VOut) -> @location(0) vec4<f32> {
     let texel = textureSample(t0, sl, in.vuv);
     return u[0].x * texel;
 }
+
+// ---- tonemapping_pars_fragment y colorspace_pars_fragment (para OutputShader) ----
+const ACESInputMat = mat3x3<f32>(vec3<f32>(0.59719, 0.07600, 0.02840), vec3<f32>(0.35458, 0.90834, 0.13383), vec3<f32>(0.04823, 0.01566, 0.83777));
+const ACESOutputMat = mat3x3<f32>(vec3<f32>(1.60475, -0.10208, -0.00327), vec3<f32>(-0.53108, 1.10813, -0.07276), vec3<f32>(-0.07367, -0.00605, 1.07602));
+
+fn RRTAndODTFit(v: vec3<f32>) -> vec3<f32> {
+    let a = v * (v + 0.0245786) - 0.000090537;
+    let b = v * (0.983729 * v + 0.4329510) + 0.238081;
+    return a / b;
+}
+
+fn ACESFilmicToneMapping(c: vec3<f32>, exposure: f32) -> vec3<f32> {
+    var color = c * (exposure / 0.6);
+    color = ACESInputMat * color;
+    color = RRTAndODTFit(color);
+    color = ACESOutputMat * color;
+    return saturate(color);
+}
+
+fn LinearToneMapping(c: vec3<f32>, exposure: f32) -> vec3<f32> {
+    return saturate(exposure * c);
+}
+
+fn ReinhardToneMapping(c: vec3<f32>, exposure: f32) -> vec3<f32> {
+    let color = c * exposure;
+    return saturate(color / (vec3<f32>(1.0) + color));
+}
+
+fn OptimizedCineonToneMapping(c: vec3<f32>, exposure: f32) -> vec3<f32> {
+    var color = c * exposure;
+    color = max(vec3<f32>(0.0), color - 0.004);
+    return pow((color * (6.2 * color + 0.5)) / (color * (6.2 * color + 1.7) + 0.06), vec3<f32>(2.2));
+}
+
+fn sRGBTransferOETF(v: vec3<f32>) -> vec3<f32> {
+    return select(pow(v, vec3<f32>(0.41666)) * 1.055 - vec3<f32>(0.055), v * 12.92, v <= vec3<f32>(0.0031308));
+}
+
+// ---- OutputShader ----  u[0] = (toneMappingExposure, modo: 0 ninguno 1 Linear 2 Reinhard 3 Cineon 4 ACES, SRGB_TRANSFER, 0)
+@fragment
+fn fs_output(in: VOut) -> @location(0) vec4<f32> {
+    var c = textureSample(t0, sl, in.vuv);
+    let e = u[0].x;
+    let mode = u32(u[0].y);
+    if (mode == 1u) {
+        c = vec4<f32>(LinearToneMapping(c.rgb, e), c.a);
+    } else if (mode == 2u) {
+        c = vec4<f32>(ReinhardToneMapping(c.rgb, e), c.a);
+    } else if (mode == 3u) {
+        c = vec4<f32>(OptimizedCineonToneMapping(c.rgb, e), c.a);
+    } else if (mode == 4u) {
+        c = vec4<f32>(ACESFilmicToneMapping(c.rgb, e), c.a);
+    }
+    if (u[0].z > 0.5) {
+        c = vec4<f32>(sRGBTransferOETF(c.rgb), c.a);
+    }
+    return c;
+}
