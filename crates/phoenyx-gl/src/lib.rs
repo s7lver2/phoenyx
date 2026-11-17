@@ -1126,7 +1126,8 @@ impl Gl {
         let depth_view = tdepth.as_ref().unwrap_or(&self.depth).clone();
         // limpieza: la de clear() pendiente, o la de autoClear (globals[48]: bit 0 color, bit 1 profundidad)
         let pend = self.pending.remove(&self.cur).unwrap_or_default();
-        let clear_color = pend.color.or_else(|| (globals[48] as u32 & 1 != 0).then_some(self.clear));
+        // la limpieza del propio render (autoClear o scene.background) se hace despues de clear(): su color manda, como en three
+        let clear_color = (globals[48] as u32 & 1 != 0).then_some(self.clear).or(pend.color);
         let clear_depth = pend.depth || (globals[48] as u32 & 2 != 0);
         let mut enc = self.device.create_command_encoder(&Default::default());
         let mut tris = 0u64;

@@ -305,13 +305,13 @@ if (sceneId === 'geoms') {
 
 // ---- modelos: GLB reales del juego con GLTFLoader + meshopt ----
 let modelsDone = Promise.resolve();
-if (sceneId === 'modelos' || sceneId === 'interior' || sceneId === 'piscina-sol' || sceneId.startsWith('ao')) {
+if (sceneId === 'modelos' || sceneId === 'interior' || sceneId === 'piscina-sol' || sceneId.startsWith('pool-fx') || sceneId.startsWith('ao')) {
   const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
   const items = [
     ['/models/items/bat.glb', -3.2, 0.9, 0.5], ['/models/items/nokia.glb', -1.2, 0.5, 1.0], ['/models/items/locker.glb', 1.4, 1.0, 0.0], ['/models/cosmetics/bicorn_hat.glb', 3.4, 0.5, 1.0],
     ['/models/items/pokeball.glb', -2.2, 0.4, 2.8], ['/models/items/beer.glb', 0.2, 0.7, 3.0],
   ];
-  modelsDone = Promise.all(items.filter((it) => sceneId === 'modelos' || (!it[0].includes('beer') && !(sceneId.startsWith('ao') && it[0].includes('bicorn')))).map(async ([url, x, size, z], i) => {
+  modelsDone = Promise.all(items.filter((it) => sceneId === 'modelos' || (!it[0].includes('beer') && !((sceneId.startsWith('ao') || sceneId.startsWith('pool-fx')) && it[0].includes('bicorn')))).map(async ([url, x, size, z], i) => {
     const gltf = await loader.loadAsync(url);
     const root = gltf.scene;
     const box = new THREE.Box3().setFromObject(root);
@@ -399,7 +399,7 @@ if (sceneId === 'sombra-casos') {
 }
 
 // ---- interior y piscina con modelos reales del juego proyectando sombra ----
-if (sceneId === 'interior' || sceneId === 'piscina-sol') {
+if (sceneId === 'interior' || sceneId === 'piscina-sol' || sceneId.startsWith('pool-fx')) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   if (sceneId === 'interior') {
@@ -556,8 +556,9 @@ if (sceneId === 'ao-normales') {
 }
 
 // ---- escenas 'ao*': GTAOPass con los valores del juego (radio 0.9, thickness 1.2, 8 muestras, mitad de resolucion) ----
+// pool-fx / pool-fx-sinao = la cadena sobre las Poolrooms con sol y sombra (sin ao = GTAOPass desactivado, como el ajuste del juego)
 // ao = cadena completa RenderPass -> GTAO -> Bloom -> Output -> SMAA; ao-ao / ao-denoise / ao-depth / ao-normal = salidas de depuracion de GTAOPass
-if (sceneId.startsWith('ao') && sceneId !== 'ao-normales') {
+if ((sceneId.startsWith('ao') && sceneId !== 'ao-normales') || sceneId.startsWith('pool-fx')) {
   // el ruido del denoise (SimplexNoise) usa Math.random: semilla fija para que three y Phoenyx generen la misma textura
   let seed = 12345;
   Math.random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
@@ -571,7 +572,10 @@ if (sceneId.startsWith('ao') && sceneId !== 'ao-normales') {
   const outs = { 'ao-ao': GTAOPass.OUTPUT.AO, 'ao-denoise': GTAOPass.OUTPUT.Denoise, 'ao-depth': GTAOPass.OUTPUT.Depth, 'ao-normal': GTAOPass.OUTPUT.Normal };
   if (sceneId in outs) ao.output = outs[sceneId];
   composer.addPass(ao);
-  if (sceneId === 'ao') {
+  if (sceneId === 'pool-fx-sinao') ao.enabled = false;
+  // pool-fx-salida: solo RenderPass -> OutputPass (el fondo scene.background se ve por el techo oculto)
+  if (sceneId === 'pool-fx-salida') composer.removePass(ao);
+  if (sceneId === 'ao' || (sceneId.startsWith('pool-fx') && sceneId !== 'pool-fx-salida')) {
     composer.addPass(new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.6, 0.92));
     composer.addPass(new OutputPass());
     composer.addPass(new SMAAPass(1280, 720));
