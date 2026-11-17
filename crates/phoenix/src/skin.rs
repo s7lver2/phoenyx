@@ -6,6 +6,7 @@ pub const MAX_INSTANCES: u32 = 2048;
 
 pub struct SkinSys {
     pub pl: wgpu::RenderPipeline,
+    pub shadow_pl: wgpu::RenderPipeline,
     l: wgpu::BindGroupLayout,
     tex_l: wgpu::BindGroupLayout,
     samp: wgpu::Sampler,
@@ -91,7 +92,31 @@ impl SkinSys {
             }),
             multisample: Default::default(), multiview_mask: None, cache: None,
         });
-        SkinSys { pl, l, tex_l, samp }
+        let attrs = [
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 2 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint8x4, offset: 32, shader_location: 3 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 36, shader_location: 4 },
+        ];
+        let shadow_pl = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("skin-shadow"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None, bind_group_layouts: &[Some(draw_l), Some(&l)], immediate_size: 0,
+            })),
+            vertex: wgpu::VertexState {
+                module: &module, entry_point: Some("vs_shadow"), compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 40, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs })],
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Front), ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: depth, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(), bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+            }),
+            multisample: Default::default(), multiview_mask: None, cache: None,
+        });
+        SkinSys { pl, shadow_pl, l, tex_l, samp }
     }
 
     /// Sube un modelo: vertices (40 B), indices u32, matrices por fotograma, clips `[primero, fotogramas, fps, dur]`
@@ -157,6 +182,19 @@ impl SkinModel {
         let n = ((data.len() / 8) as u32).min(MAX_INSTANCES);
         queue.write_buffer(&self.inst, 0, bytemuck::cast_slice(&data[..n as usize * 8]));
         self.count = n;
+    }
+
+    /// Profundidad de los personajes en una vista de sombras (`view_bg` = globals de esa vista).
+    pub fn draw_shadow<'a>(&'a self, p: &mut wgpu::RenderPass<'a>, pl: &'a wgpu::RenderPipeline, view_bg: &'a wgpu::BindGroup) {
+        if self.count == 0 {
+            return;
+        }
+        p.set_pipeline(pl);
+        p.set_bind_group(0, view_bg, &[]);
+        p.set_bind_group(1, &self.bg, &[]);
+        p.set_vertex_buffer(0, self.vb.slice(..));
+        p.set_index_buffer(self.ib.slice(..), wgpu::IndexFormat::Uint32);
+        p.draw_indexed(0..self.n_idx, 0, 0..self.count);
     }
 
     pub fn draw<'a>(&'a self, p: &mut wgpu::RenderPass<'a>, pl: &'a wgpu::RenderPipeline, draw_bg: &'a wgpu::BindGroup, gnd_bg: &'a wgpu::BindGroup) {

@@ -43,6 +43,8 @@ struct SView {
     cur: wgpu::Buffer,
     cull_bg: wgpu::BindGroup,
     bundle: wgpu::RenderBundle,
+    /// Globals de la vista (para dibujar los personajes en su mapa de sombras).
+    dbg: wgpu::BindGroup,
 }
 
 struct Ts {
@@ -709,7 +711,7 @@ pub async fn create(
             b.draw_indexed_indirect(&args, d * 20);
         }
         let bundle = b.finish(&wgpu::RenderBundleDescriptor { label: None });
-        SView { globals, args, cur, cull_bg, bundle }
+        SView { globals, args, cur, cull_bg, bundle, dbg }
     };
     let sviews: Vec<SView> = (0..lux::SHADOW_LAYERS).map(mk_view).collect();
 
@@ -1140,6 +1142,9 @@ impl Phoenix {
                     ..Default::default()
                 });
                 p.execute_bundles([&sv.bundle]);
+                for m in &self.skins {
+                    m.draw_shadow(&mut p, &self.skin_sys.shadow_pl, &sv.dbg);
+                }
             }
         }
         {

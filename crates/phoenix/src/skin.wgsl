@@ -44,8 +44,7 @@ fn pose(f0: u32, f1: u32, a: f32, j: u32, nb: u32, w: f32, acc: ptr<function, ar
   }
 }
 
-@vertex
-fn vs(v: VIn, @builtin(instance_index) ii: u32) -> VOut {
+fn skin_vertex(v: VIn, ii: u32) -> VOut {
   let i0 = sinst[ii * 2u];
   let i1 = sinst[ii * 2u + 1u];
   let c = clips[u32(i1.y)];
@@ -79,6 +78,11 @@ fn vs(v: VIn, @builtin(instance_index) ii: u32) -> VOut {
   return o;
 }
 
+@vertex
+fn vs(v: VIn, @builtin(instance_index) ii: u32) -> VOut {
+  return skin_vertex(v, ii);
+}
+
 @fragment
 fn fs(v: VOut) -> @location(0) vec4<f32> {
   let albedo = textureSample(sbase, ssamp, v.uv).rgb;
@@ -86,4 +90,10 @@ fn fs(v: VOut) -> @location(0) vec4<f32> {
   let view = normalize(g.cam.xyz - v.wpos);
   let lit = lit_surface(v.wpos, n, view, albedo, 0.7, 0.0, 1.0, v.pos.xy, 1.0 / v.pos.w);
   return vec4<f32>(lit, 1.0);
+}
+
+// Solo profundidad para los mapas de sombra (misma pose que el render).
+@vertex
+fn vs_shadow(v: VIn, @builtin(instance_index) ii: u32) -> @builtin(position) vec4<f32> {
+  return skin_vertex(v, ii).pos;
 }
