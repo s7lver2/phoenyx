@@ -191,6 +191,22 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
     let sMap = textureSample(tex_map, smp_map, uvT(m, 0u, in.uv));
     let sRough = textureSample(tex_rough, smp_rough, uvT(m, 2u, in.uv));
     let sEmis = textureSample(tex_emis, smp_emis, uvT(m, 3u, in.uv));
+    // normal_fragment_maps / bumpmap_pars_fragment / normalmap_pars_fragment: derivadas y muestras fuera de cualquier rama
+    let backSgn = select(1.0, -1.0, (dr.w & 32u) != 0u);   // three niega normalScale y bumpScale con BackSide
+    let uvN = uvT(m, 1u, in.uv);
+    let uvB = uvT(m, 4u, in.uv);
+    let q0 = dpdx(in.vpos);
+    // WebGPU tiene la y de pantalla hacia abajo y GL hacia arriba: dFdy de GLSL = -dpdy
+    let q1 = -dpdy(in.vpos);
+    let stN0 = dpdx(uvN);
+    let stN1 = -dpdy(uvN);
+    let dSTdx = dpdx(uvB);
+    let dSTdy = -dpdy(uvB);
+    let sNormal = textureSample(tex_normal, smp_normal, uvN);
+    let bumpScale = m.tp.w * backSgn;
+    let Hll = bumpScale * textureSample(tex_bump, smp_bump, uvB).x;
+    let dBx = bumpScale * textureSample(tex_bump, smp_bump, uvB + dSTdx).x - Hll;
+    let dBy = bumpScale * textureSample(tex_bump, smp_bump, uvB + dSTdy).x - Hll;
     // map_fragment: diffuseColor *= sampledDiffuseColor; color_fragment: diffuseColor.rgb *= vColor
     var diffuse = m.color.rgb;
     var diffuseA = m.color.a;
@@ -209,9 +225,41 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
 
     if (m.misc.y > 0.5) {
         // ---- MeshStandardMaterial: meshphysical.glsl.js sin sheen, clearcoat, iridiscencia ni transmision ----
+        // normal_fragment_begin + normal_fragment_maps
+        let faceDirection = select(-1.0, 1.0, frontFacing);
         var normal = nUn;
-        if ((dr.w & 64u) != 0u) {   // DOUBLE_SIDED
-            normal = normal * select(-1.0, 1.0, frontFacing);
+        let doubleSided = (dr.w & 64u) != 0u;
+        if (doubleSided) {
+            normal = normal * faceDirection;
+        }
+        if ((maps & 2u) != 0u) {
+            // normalmap_pars_fragment: getTangentFrame (sin tangentes precalculadas) y espacio tangente
+            let N = normal;
+            let q1perp = cross(q1, N);
+            let q0perp = cross(N, q0);
+            let T = q1perp * stN0.x + q0perp * stN1.x;
+            let B = q1perp * stN0.y + q0perp * stN1.y;
+            let det = max(dot(T, T), dot(B, B));
+            let tscale = select(inverseSqrt(det), 0.0, det == 0.0);
+            var tT = T * tscale;
+            var tB = B * tscale;
+            if (doubleSided) {
+                tT = tT * faceDirection;
+                tB = tB * faceDirection;
+            }
+            var mapN = sNormal.xyz * 2.0 - 1.0;
+            mapN = vec3<f32>(mapN.xy * (m.tp.yz * backSgn), mapN.z);
+            normal = normalize(tT * mapN.x + tB * mapN.y + N * mapN.z);
+        } else if ((maps & 16u) != 0u) {
+            // perturbNormalArb (Mikkelsen)
+            let vSigmaX = normalize(q0);
+            let vSigmaY = normalize(q1);
+            let vN = normal;
+            let R1 = cross(vSigmaY, vN);
+            let R2 = cross(vN, vSigmaX);
+            let fDet = dot(vSigmaX, R1) * faceDirection;
+            let vGrad = sign(fDet) * (dBx * R1 + dBy * R2);
+            normal = normalize(abs(fDet) * vN - vGrad);
         }
         let metalnessFactor = m.misc.x;
         let roughnessFactor = m.emissive.a * select(1.0, sRough.g, (maps & 4u) != 0u);

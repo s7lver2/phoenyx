@@ -182,6 +182,26 @@ if (texScene) {
   dt.magFilter = THREE.NearestFilter; dt.minFilter = THREE.NearestFilter; dt.generateMipmaps = false; dt.colorSpace = THREE.SRGBColorSpace; dt.needsUpdate = true;
   const dcube = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), new THREE.MeshBasicMaterial({ map: dt }));
   dcube.position.set(1.2, 0.4, 2.8); dcube.rotation.y = -0.4; scene.add(dcube);
+
+  // bumpMap: relieve de circulos sobre un panel y sobre el muro del fondo (bumpScale distinto)
+  const height = canvasTex((g, n) => {
+    g.fillStyle = '#404040'; g.fillRect(0, 0, n, n);
+    for (let i = 0; i < 12; i++) { const gr = g.createRadialGradient((i % 4) * 64 + 32, Math.floor(i / 4) * 80 + 40, 2, (i % 4) * 64 + 32, Math.floor(i / 4) * 80 + 40, 28); gr.addColorStop(0, '#ffffff'); gr.addColorStop(1, '#404040'); g.fillStyle = gr; g.beginPath(); g.arc((i % 4) * 64 + 32, Math.floor(i / 4) * 80 + 40, 28, 0, 7); g.fill(); }
+  }, 256, false);
+  const bumpCube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0xc8b070, bumpMap: height, bumpScale: 2.5, roughness: 0.6 }));
+  bumpCube.position.set(-3.2, 0.5, -3); bumpCube.rotation.y = 0.5; scene.add(bumpCube);
+  // normalMap: cupula calculada a mano
+  const nm = canvasTex((g, n) => {
+    const im = g.createImageData(n, n);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const u = ((x % 128) - 64) / 64, v = ((y % 128) - 64) / 64, r2 = u * u + v * v;
+      const z = Math.sqrt(Math.max(0.05, 1 - Math.min(1, r2))), nx = r2 < 1 ? u : 0, ny = r2 < 1 ? -v : 0, l = Math.hypot(nx, ny, z);
+      im.data.set([(nx / l * 0.5 + 0.5) * 255, (ny / l * 0.5 + 0.5) * 255, (z / l * 0.5 + 0.5) * 255, 255], (y * n + x) * 4);
+    }
+    g.putImageData(im, 0, 0);
+  }, 256, false);
+  const nmPlane = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1.8), new THREE.MeshStandardMaterial({ color: 0xb0b0c8, normalMap: nm, normalScale: new THREE.Vector2(1, 1), roughness: 0.35, metalness: 0.1, side: THREE.DoubleSide }));
+  nmPlane.position.set(3.6, 1.2, -4.9); scene.add(nmPlane);
   // colores por vertice
   const vg = new THREE.BoxGeometry(0.8, 0.8, 0.8);
   const vc = new Float32Array(vg.attributes.position.count * 3);
