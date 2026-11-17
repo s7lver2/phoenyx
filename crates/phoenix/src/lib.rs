@@ -363,6 +363,7 @@ pub async fn create(
             required_limits: wgpu::Limits {
                 max_buffer_size: max.max_buffer_size,
                 max_storage_buffer_binding_size: max.max_storage_buffer_binding_size,
+                max_storage_buffers_per_shader_stage: max.max_storage_buffers_per_shader_stage.min(10),
                 ..Default::default()
             },
             ..Default::default()
@@ -452,7 +453,7 @@ pub async fn create(
         label: None,
         entries: &[
             uni(S::COMPUTE), entry(ro, 1, S::COMPUTE), entry(ro, 2, S::COMPUTE),
-            entry(rw, 3, S::COMPUTE), entry(rw, 4, S::COMPUTE), entry(rw, 5, S::COMPUTE), entry(rw, 6, S::COMPUTE),
+            entry(rw, 3, S::COMPUTE), entry(rw, 4, S::COMPUTE), entry(rw, 5, S::COMPUTE), entry(rw, 6, S::COMPUTE), entry(rw, 7, S::COMPUTE),
         ],
     });
     let draw_l = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -469,7 +470,11 @@ pub async fn create(
             .collect();
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: l, entries: &e })
     };
-    let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &info_buf), (3, &args), (4, &cur), (5, &vis), (6, &chunks)]);
+    // Resultado de `pick` por instancia (count lo escribe, scatter lo lee): se evalua una sola vez por vista.
+    let work = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None, size: count as u64 * 8, mapped_at_creation: false, usage: wgpu::BufferUsages::STORAGE,
+    });
+    let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &info_buf), (3, &args), (4, &cur), (5, &vis), (6, &chunks), (7, &work)]);
     let draw_bg = bind(&draw_l, &[(0, &globals), (1, &inst_buf)]);
     let vis_bg = bind(&vis_l, &[(0, &vis)]);
 
@@ -683,7 +688,7 @@ pub async fn create(
         let svis = device.create_buffer(&wgpu::BufferDescriptor {
             label: None, size: count as u64 * 4, mapped_at_creation: false, usage: wgpu::BufferUsages::STORAGE,
         });
-        let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &info_buf), (3, &args), (4, &cur), (5, &svis), (6, &chunks)]);
+        let cull_bg = bind(&cull_l, &[(0, &globals), (1, &inst_buf), (2, &info_buf), (3, &args), (4, &cur), (5, &svis), (6, &chunks), (7, &work)]);
         let dbg = bind(&draw_l, &[(0, &globals), (1, &inst_buf)]);
         let vbg = bind(&vis_l, &[(0, &svis)]);
         let mut b = device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {

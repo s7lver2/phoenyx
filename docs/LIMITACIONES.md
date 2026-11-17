@@ -19,7 +19,7 @@
 - La demo de exteriores usa escaneos de Megascans que no se pueden redistribuir.
 
 ## Rendimiento (ideas evidentes, sin hacer)
-- `count` y `scatter` calculan `pick` dos veces; guardar el resultado en un buffer de trabajo reduciría el coste del culling a la mitad.
+- (Hecho) `count` guarda el resultado de `pick` en un buffer de trabajo y `scatter` lo lee; pide hasta 10 buffers de almacenamiento por etapa de shader (el límite por defecto es 8).
 - Una jerarquía espacial de chunks (en lugar de bloques contiguos de 64) mejoraría el descarte cuando las instancias no están ordenadas por posición.
 - Escalado dinámico de resolución (el post-proceso ya permite renderizar a menos resolución y componer).
 - Exposición automática (ya hay HDR).

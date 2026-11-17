@@ -21,6 +21,8 @@ struct Globals {
 @group(0) @binding(4) var<storage, read_write> cur: array<atomic<u32>>;
 @group(0) @binding(5) var<storage, read_write> vis: array<u32>;
 @group(0) @binding(6) var<storage, read_write> chunks: array<vec4<f32>>;
+// Resultado de pick por instancia: x = d0 + 1, y = (d1 + 1) | peso << 24 (0 = no se dibuja).
+@group(0) @binding(7) var<storage, read_write> work: array<vec2<u32>>;
 // Piramide Hi-Z del frame anterior (nivel 0 = mitad de resolucion; profundidad mas lejana por texel).
 @group(1) @binding(1) var hiz: texture_2d<f32>;   // esfera (centro, radio) de cada grupo de 64 instancias
 
@@ -131,6 +133,7 @@ fn count(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation
   workgroupBarrier();
   if (chunk_ok == 0u || id.x >= u32(g.misc.x)) { return; }
   let p = pick(id.x);
+  work[id.x] = vec2<u32>(u32(p.d0 + 1), u32(p.d1 + 1) | (p.t << 24u));
   if (p.d0 >= 0) { atomicAdd(&args[u32(p.d0) * 5u + 1u], 1u); }
   if (p.d1 >= 0) { atomicAdd(&args[u32(p.d1) * 5u + 1u], 1u); }
 }
@@ -151,7 +154,11 @@ fn scatter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocati
   if (li == 0u) { chunk_ok = select(0u, 1u, chunk_visible(wg.x)); }
   workgroupBarrier();
   if (chunk_ok == 0u || id.x >= u32(g.misc.x)) { return; }
-  let p = pick(id.x);
+  let wk = work[id.x];
+  var p: Pick;
+  p.d0 = i32(wk.x) - 1;
+  p.d1 = i32(wk.y & 0xFFFFFFu) - 1;
+  p.t = wk.y >> 24u;
   // vis = instancia | peso (7 bits) << 24 | rol (bit 31: 1 = copia gruesa)
   if (p.d0 >= 0) {
     let off = atomicLoad(&args[u32(p.d0) * 5u + 4u]);
