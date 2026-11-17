@@ -1,0 +1,117 @@
+{
+  "url": "http://localhost:5200/fidelity",
+  "preset": "high",
+  "throttle": 4,
+  "perf": {
+    "sala-exp": {
+      "drawCalls": 19,
+      "triangles": 208,
+      "geometries": 18,
+      "textures": 0,
+      "frameMsMedian": 1.4,
+      "frameMsP95": 2,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sala-lineal": {
+      "drawCalls": 19,
+      "triangles": 208,
+      "geometries": 18,
+      "textures": 0,
+      "frameMsMedian": 1.6,
+      "frameMsP95": 2.5,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sala-sinniebla": {
+      "drawCalls": 19,
+      "triangles": 208,
+      "geometries": 18,
+      "textures": 0,
+      "frameMsMedian": 1.4,
+      "frameMsP95": 2.2,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sala-basic-exp": {
+      "drawCalls": 19,
+      "triangles": 208,
+      "geometries": 18,
+      "textures": 0,
+      "frameMsMedian": 1.2,
+      "frameMsP95": 2.1,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sala-basic-lineal": {
+      "drawCalls": 19,
+      "triangles": 208,
+      "geometries": 18,
+      "textures": 0,
+      "frameMsMedian": 1.3,
+      "frameMsP95": 2.2,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "tex": {
+      "drawCalls": 28,
+      "triangles": 266,
+      "geometries": 26,
+      "textures": 10,
+      "frameMsMedian": 2.3,
+      "frameMsP95": 3.6,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "inst": {
+      "drawCalls": 21,
+      "triangles": 5248,
+      "geometries": 20,
+      "textures": 0,
+      "frameMsMedian": 1.4,
+      "frameMsP95": 2.2,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "geoms": {
+      "drawCalls": 33,
+      "triangles": 3014,
+      "geometries": 32,
+      "textures": 0,
+      "frameMsMedian": 1.8,
+      "frameMsP95": 2.9,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "modelos": {
+      "drawCalls": 62,
+      "triangles": 60350,
+      "geometries": 30,
+      "textures": 11,
+      "frameMsMedian": 7.1,
+      "frameMsP95": 8.9,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sala-basic": {
+      "drawCalls": 19,
+      "triangles": 208,
+      "geometries": 18,
+      "textures": 0,
+      "frameMsMedian": 1.3,
+      "frameMsP95": 2.1,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    }
+  }
+}
