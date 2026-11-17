@@ -14,6 +14,9 @@ export const OBJECT_F = 32;
 export const MATERIAL_F = 64;
 export const LIGHT_F = 16;
 export const MAX_LIGHTS = 64;
+export const SHADOW_F = 48;
+/** Luces con sombra a la vez (una capa del mapa de sombras por luz). */
+export const MAX_SHADOWS = 4;
 
 interface Item {
   object: any;
@@ -32,7 +35,15 @@ export interface Packed {
   materials: Float32Array;
   lights: Float32Array;
   draws: Uint32Array;
+  /** dibujos de la escena; el resto de `draws` son los de las pasadas de sombras */
   nDraws: number;
+  shadows: Float32Array;
+  /** [capa, primer dibujo, n dibujos, ancho, alto] por mapa que se repinta */
+  shadowPasses: Uint32Array;
+  /** si cambia hace falta reservar de nuevo los mapas (capas, lado) */
+  shadowAlloc: [number, number] | null;
+  /** la pasada de sombras se ejecuto (three entonces baja shadowMap.needsUpdate) */
+  shadowRan: boolean;
   triangles: number;
 }
 
@@ -42,6 +53,7 @@ export interface FrameState {
   /** color de fondo ya en el espacio de salida (lo que three manda a gl.clearColor) */
   clear: [number, number, number, number];
   outputColorSpace: string;
+  shadow: { enabled: boolean; type: number; autoUpdate: boolean; needsUpdate: boolean };
 }
 
 const painterSortStable = (a: Item, b: Item) =>
@@ -76,6 +88,8 @@ export class Packer {
   private opaque: Item[] = [];
   private transparent: Item[] = [];
   private lights: any[] = [];
+  private sLayers = 0;
+  private sSize = 0;
 
   pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null): Packed {
     if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
@@ -124,11 +138,38 @@ export class Packer {
       return i;
     };
 
+    // sombras (WebGLShadowMap.render): luces con castShadow, ya sea por foco o direccional; los mapas se repintan segun autoUpdate/needsUpdate
+    const sh = st.shadow;
+    const shadowLights: any[] = [];
+    if (sh.enabled) {
+      for (const l of this.lights) {
+        if (!l.castShadow || !l.shadow) continue;
+        if (!l.isSpotLight && !l.isDirectionalLight) warnOnce('shadow-' + l.type, `la sombra de ${l.type} aun no esta soportada`);
+        else if (shadowLights.length < MAX_SHADOWS) shadowLights.push(l);
+        else warnOnce('maxshadows', `hay mas de ${MAX_SHADOWS} luces con sombra: sobran`);
+      }
+    }
+    const shadowRan = sh.enabled && this.lights.length > 0 && (sh.autoUpdate || sh.needsUpdate);
+    let sLayers = Math.max(this.sLayers, shadowLights.length), sSize = this.sSize;
+    for (const l of shadowLights) sSize = Math.max(sSize, l.shadow.mapSize.x, l.shadow.mapSize.y);
+    const shadowAlloc: [number, number] | null = shadowLights.length && (sLayers !== this.sLayers || sSize !== this.sSize) ? [sLayers, sSize] : null;
+    if (shadowAlloc) (this.sLayers = sLayers, this.sSize = sSize);
+    const shadowCasters: Array<Array<{ object: any; geometry: any; material: any; group: any }> | null> = shadowLights.map((l) => {
+      // un mapa nuevo (reservado de nuevo) se repinta aunque la luz no lo pida: su contenido se perdio
+      if (!shadowRan || !(shadowAlloc || l.shadow.autoUpdate || l.shadow.needsUpdate)) return null;
+      l.shadow.updateMatrices(l);
+      const out: Array<{ object: any; geometry: any; material: any; group: any }> = [];
+      this.collectCasters(scene, camera, l.shadow.getFrustum(), out);
+      return out;
+    });
+    const extraObjs = shadowCasters.reduce((n, c) => n + (c ? c.length : 0), 0);
+
     const list = [...this.opaque, ...this.transparent];
-    const objs = new Float32Array(list.length * 2 * OBJECT_F); // hasta 2 dibujos por objeto, comparten registro
+    const objs = new Float32Array((list.length * 2 + extraObjs) * OBJECT_F); // hasta 2 dibujos por objeto, comparten registro
     const draws: number[] = [];
     let triangles = 0;
     let no = 0;
+    const objRec = new Map<any, number>();
     for (const it of list) {
       const o = it.object, m = it.material;
       // como renderBufferDirect: sin posicion no se dibuja; materiales sin color (Shader, Depth, Normal...) aun no se soportan
@@ -138,6 +179,7 @@ export class Packer {
       this.mv.multiplyMatrices(camera.matrixWorldInverse, o.matrixWorld);
       this.nm.getNormalMatrix(this.mv);
       const base = no * OBJECT_F;
+      if (!objRec.has(o)) objRec.set(o, no);
       objs.set(o.matrixWorld.elements, base);
       const n = this.nm.elements;
       objs.set([n[0], n[1], n[2], 0, n[3], n[4], n[5], 0, n[6], n[7], n[8], 0], base + 16);
@@ -148,7 +190,7 @@ export class Packer {
       if (o.isInstancedMesh && (!ii || ii.count === 0)) continue;
       // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
       const flip = o.matrixWorld.determinant() < 0;
-      const common = (m.transparent ? 4 : 0) | (m.depthWrite !== false && m.depthTest !== false ? 8 : 0) | (m.depthTest !== false ? 16 : 0);
+      const common = (o.receiveShadow ? 256 : 0) | (m.transparent ? 4 : 0) | (m.depthWrite !== false && m.depthTest !== false ? 8 : 0) | (m.depthTest !== false ? 16 : 0);
       // rango de dibujo: drawRange y grupo, como WebGLRenderer.renderBufferDirect
       const geo = it.geometry;
       const dataCount = geo.index ? geo.index.count : geo.attributes.position.count;
@@ -181,6 +223,50 @@ export class Packer {
       no++;
     }
 
+    // dibujos de las pasadas de sombras, a continuacion de los de la escena (comparten buffers de objetos, geometrias y materiales)
+    const mainDraws = draws.length / 12;
+    const shadowData = new Float32Array(Math.max(1, shadowLights.length) * SHADOW_F);
+    const shadowPasses: number[] = [];
+    shadowLights.forEach((l, layer) => {
+      const shadow = l.shadow;
+      const casters = shadowCasters[layer];
+      const vp = new Matrix4().multiplyMatrices(shadow.camera.projectionMatrix, shadow.camera.matrixWorldInverse);
+      const b = layer * SHADOW_F;
+      shadowData.set(shadow.matrix.elements, b);
+      shadowData.set(vp.elements, b + 16);
+      shadowData.set([shadow.bias, shadow.normalBias, shadow.radius, shadow.mapSize.x, shadow.mapSize.y], b + 32);
+      if (!casters) return;
+      const start = draws.length / 12;
+      for (const it of casters) {
+        const o = it.object, m = it.material, geo = it.geometry;
+        const ii = o.isInstancedMesh ? instInfo(o) : null;
+        if (o.isInstancedMesh && (!ii || ii.count === 0)) continue;
+        let rec = objRec.get(o);
+        if (rec === undefined) {
+          rec = no++;
+          objRec.set(o, rec);
+          objs.set(o.matrixWorld.elements, rec * OBJECT_F);
+        }
+        const dataCount = geo.index ? geo.index.count : geo.attributes.position.count;
+        const gs = it.group ? it.group.start : 0, gc = it.group ? it.group.count : Infinity;
+        const first = Math.max(geo.drawRange.start, gs);
+        const idx = Math.max(0, Math.min(dataCount, geo.drawRange.start + geo.drawRange.count, gs + gc) - first);
+        if (idx === 0) continue;
+        const gid = geomId(geo);
+        const tk = texKey(m);
+        const mi = matIndex(m);
+        // shadowSide como WebGLShadowMap.getDepthMaterial: FrontSide proyecta con las caras traseras y al reves
+        const side = m.shadowSide != null ? m.shadowSide : m.side === FrontSide ? BackSide : m.side === BackSide ? FrontSide : DoubleSide;
+        const flip = o.matrixWorld.determinant() < 0;
+        const alpha = m.alphaTest > 0 && m.map && textureReady(m.map) ? 512 : 0;
+        const fl = (side === DoubleSide ? 1 : 0) | ((side === BackSide) !== flip ? 2 : 0) | alpha;
+        if (!ii) draws.push(gid, rec, mi, fl, first, idx, tk, 0xffffffff, 1, 0, layer, 0);
+        else for (let s0 = 0; s0 < ii.count; s0 += 65535) draws.push(gid, rec, mi, fl, first, idx, tk, ii.id, Math.min(65535, ii.count - s0), s0, layer, 0);
+      }
+      shadowPasses.push(layer, start, draws.length / 12 - start, shadow.mapSize.x, shadow.mapSize.y);
+      shadow.needsUpdate = false;
+    });
+
     // luces: puntuales primero y luego direccionales (el orden de los bucles de lights_fragment_begin)
     const view = camera.matrixWorldInverse;
     const lightData: number[] = [];
@@ -212,7 +298,7 @@ export class Packer {
           v.setFromMatrixPosition(l.matrixWorld);
           const t = new Vector3().setFromMatrixPosition(l.target.matrixWorld);
           v.sub(t).transformDirection(view);
-          lightData.push(3, l.color.r * k, l.color.g * k, l.color.b * k, px, py, pz, l.distance, l.decay, v.x, v.y, v.z, Math.cos(l.angle), Math.cos(l.angle * (1 - l.penumbra)), 0, 0);
+          lightData.push(3, l.color.r * k, l.color.g * k, l.color.b * k, px, py, pz, l.distance, l.decay, v.x, v.y, v.z, Math.cos(l.angle), Math.cos(l.angle * (1 - l.penumbra)), shadowLights.indexOf(l) + 1, 0);
         } else if (type === 'rect' && l.isRectAreaLight) {
           if (count++ >= MAX_LIGHTS) continue;
           // posicion, medio ancho y medio alto en vista (WebGLLights: rotacion de la matriz de vista x matrixWorld)
@@ -226,7 +312,7 @@ export class Packer {
           v.setFromMatrixPosition(l.matrixWorld);
           const t = new Vector3().setFromMatrixPosition(l.target.matrixWorld);
           v.sub(t).transformDirection(view);
-          lightData.push(0, l.color.r * k, l.color.g * k, l.color.b * k, 0, 0, 0, 0, 0, v.x, v.y, v.z, 0, 0, 0, 0);
+          lightData.push(0, l.color.r * k, l.color.g * k, l.color.b * k, 0, 0, 0, 0, 0, v.x, v.y, v.z, 0, 0, shadowLights.indexOf(l) + 1, 0);
         }
       }
     }
@@ -262,16 +348,40 @@ export class Packer {
     g[48] = 0;
     g[51] = camera.isOrthographicCamera ? 1 : 0;
     g[50] = Math.min(count, MAX_LIGHTS);
+    g[56] = shadowLights.length;
+    g[57] = st.shadow.type === 3 ? 2 : st.shadow.type;
 
     return {
       globals: g,
       objects: objs.subarray(0, no * OBJECT_F),
+      shadows: shadowData,
+      shadowPasses: new Uint32Array(shadowPasses),
+      shadowAlloc,
+      shadowRan,
       materials: new Float32Array(matData),
       lights: new Float32Array(lightData),
       draws: new Uint32Array(draws),
-      nDraws: draws.length / 12,
+      nDraws: mainDraws,
       triangles,
     };
+  }
+
+  /** WebGLShadowMap.renderObject: mallas que proyectan sombra dentro del frustum de la camara de sombra. */
+  private collectCasters(object: any, camera: any, frustum: Frustum, out: Array<{ object: any; geometry: any; material: any; group: any }>) {
+    if (object.visible === false) return;
+    if (object.layers.test(camera.layers) && object.isMesh && object.castShadow && (!object.frustumCulled || frustum.intersectsObject(object))) {
+      const geo = object.geometry;
+      const gp = geo.attributes.position;
+      if (gp && gp.count > 0) {
+        const push = (material: any, group: any) => {
+          if (material && material.visible !== false && material.color) out.push({ object, geometry: geo, material, group });
+        };
+        if (Array.isArray(object.material)) {
+          for (const group of geo.groups) push(object.material[group.materialIndex], group);
+        } else push(object.material, null);
+      }
+    }
+    for (const c of object.children) this.collectCasters(c, camera, frustum, out);
   }
 
   /** WebGLRenderer.projectObject: visibilidad, capas, frustum y cola opaca/transparente. */

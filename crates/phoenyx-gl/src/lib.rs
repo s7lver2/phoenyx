@@ -38,6 +38,25 @@ fn ltc_view(device: &wgpu::Device, queue: &wgpu::Queue, n: u32, data: &[f32]) ->
     t.create_view(&Default::default())
 }
 
+/// Mapas de sombra: una textura de profundidad con una capa por luz; devuelve la vista del array y una vista por capa.
+fn shadow_views(device: &wgpu::Device, layers: u32, size: u32) -> (wgpu::TextureView, Vec<wgpu::TextureView>) {
+    let t = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: layers },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let all = t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+    let each = (0..layers)
+        .map(|l| t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: l, array_layer_count: Some(1), ..Default::default() }))
+        .collect();
+    (all, each)
+}
+
 fn srgb_to_lin(v: u8) -> f32 {
     let c = v as f32 / 255.0;
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
@@ -139,6 +158,12 @@ pub struct Gl {
     white: wgpu::TextureView,
     ltc1: wgpu::TextureView,
     ltc2: wgpu::TextureView,
+    shadows: Growable,
+    shadow_all: wgpu::TextureView,
+    shadow_layers: Vec<wgpu::TextureView>,
+    shadow_dummy: wgpu::TextureView,
+    bg_shadow: Option<wgpu::BindGroup>,
+    shadow_pipelines: HashMap<u32, wgpu::RenderPipeline>,
     default_sampler: wgpu::Sampler,
     lut: Box<[f32; 256]>,
     globals: wgpu::Buffer,
@@ -237,6 +262,13 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
                 count: None,
                 ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             },
+            st(9, ro, both),
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                count: None,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false },
+            },
         ],
     });
     let tex_entry = |b: u32| wgpu::BindGroupLayoutEntry {
@@ -306,6 +338,12 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         white,
         ltc1: ltc_view(&device, &queue, 1, &[0.0; 4]),
         ltc2: ltc_view(&device, &queue, 1, &[0.0; 4]),
+        shadows: Growable::new(&device, 1024),
+        shadow_all: shadow_views(&device, 1, 1).0,
+        shadow_layers: Vec::new(),
+        shadow_dummy: shadow_views(&device, 1, 1).0,
+        bg_shadow: None,
+        shadow_pipelines: HashMap::new(),
         default_sampler,
         lut,
         depth: depth_view(&device, w, h),
@@ -629,9 +667,64 @@ impl Gl {
         self.pipelines.insert(flags, pl);
     }
 
+    /// Reserva los mapas de sombra (una capa por luz con sombra, todas de `size` x `size`). Deja los mapas vacios.
+    pub fn set_shadow_maps(&mut self, layers: u32, size: u32) {
+        let (all, each) = shadow_views(&self.device, layers.max(1), size.max(1));
+        self.shadow_all = all;
+        self.shadow_layers = each;
+        self.bg = None;
+    }
+
+    fn ensure_shadow_pipeline(&mut self, flags: u32) {
+        // clave: bits 0 y 1 (doble cara, giro horario) y bit 9 (descarte por alfa del mapa)
+        let key = (flags & 3) | ((flags >> 9) & 1) << 2;
+        if self.shadow_pipelines.contains_key(&key) {
+            return;
+        }
+        let cull = if key & 1 != 0 { None } else { Some(wgpu::Face::Back) };
+        let front = if key & 2 != 0 { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw };
+        let pl = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&self.layout),
+            vertex: wgpu::VertexState {
+                module: &self.module,
+                entry_point: Some("vs_shadow"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 44,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 2 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 32, shader_location: 3 },
+                    ],
+                })],
+            },
+            fragment: (key & 4 != 0).then(|| wgpu::FragmentState {
+                module: &self.module,
+                entry_point: Some("fs_shadow"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            primitive: wgpu::PrimitiveState { cull_mode: cull, front_face: front, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        self.shadow_pipelines.insert(key, pl);
+    }
+
     /// Dibuja un fotograma. Los formatos de los arrays: ver docs/FASE1.md.
     /// `draws`: 12 u32 por dibujo `[geometria, objeto, material, flags, primer indice, n indices, clave de texturas, malla instanciada (u32::MAX si no), n instancias, primera instancia, 0, 0]`, ya en el orden final de pintado.
-    pub fn frame(&mut self, globals: &[f32], objects: &[f32], materials: &[f32], lights: &[f32], draws: &[u32]) {
+    pub fn frame(&mut self, globals: &[f32], objects: &[f32], materials: &[f32], lights: &[f32], draws: &[u32], shadows: &[f32], shadow_passes: &[u32], main_draws: u32) {
         if globals.len() < GLOBALS_F {
             return;
         }
@@ -640,6 +733,7 @@ impl Gl {
         let mut grew = self.objects.write(&self.device, &self.queue, bytemuck::cast_slice(objects));
         grew |= self.materials.write(&self.device, &self.queue, bytemuck::cast_slice(materials));
         grew |= self.lights.write(&self.device, &self.queue, bytemuck::cast_slice(lights));
+        grew |= self.shadows.write(&self.device, &self.queue, bytemuck::cast_slice(shadows));
         // la malla instanciada se resuelve a su plaza de la reserva; el indice de dibujo va en los 16 bits altos de la instancia
         let mut dr = draws.to_vec();
         for c in dr.chunks_exact_mut(12) {
@@ -669,11 +763,36 @@ impl Gl {
                     entry(6, &self.inst_cols.buf),
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&self.ltc1) },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.ltc2) },
+                    entry(9, &self.shadows.buf),
+                    wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&self.shadow_all) },
+                ],
+            }));
+            // la pasada de sombras no puede leer el mapa que esta escribiendo: usa un mapa vacio en su lugar
+            self.bg_shadow = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.bgl,
+                entries: &[
+                    entry(0, &self.globals),
+                    entry(1, &self.objects.buf),
+                    entry(2, &self.materials.buf),
+                    entry(3, &self.lights.buf),
+                    entry(4, &self.draws.buf),
+                    entry(5, &self.inst_mats.buf),
+                    entry(6, &self.inst_cols.buf),
+                    wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&self.ltc1) },
+                    wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.ltc2) },
+                    entry(9, &self.shadows.buf),
+                    wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&self.shadow_dummy) },
                 ],
             }));
         }
-        for d in draws.chunks_exact(12) {
+        let nmain = (main_draws as usize * 12).min(draws.len());
+        for d in draws[..nmain].chunks_exact(12) {
             self.ensure_pipeline(d[3]);
+            self.ensure_tex_bg(d[6]);
+        }
+        for d in draws[nmain..].chunks_exact(12) {
+            self.ensure_shadow_pipeline(d[3]);
             self.ensure_tex_bg(d[6]);
         }
         let frame = match self.surface.get_current_texture() {
@@ -686,6 +805,41 @@ impl Gl {
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
         let mut tris = 0u64;
+        // pasadas de sombras: [capa, primer dibujo, n dibujos, ancho, alto] por luz que se repinta
+        for sp in shadow_passes.chunks_exact(5) {
+            let Some(layer) = self.shadow_layers.get(sp[0] as usize) else { continue };
+            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: layer,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            p.set_viewport(0.0, 0.0, sp[3] as f32, sp[4] as f32, 0.0, 1.0);
+            p.set_bind_group(0, self.bg_shadow.as_ref(), &[]);
+            let mut last_key = u32::MAX;
+            for i in sp[1] as usize..(sp[1] + sp[2]) as usize {
+                let d = &draws[i * 12..i * 12 + 12];
+                let Some(g) = self.geoms.get(&d[0]) else { continue };
+                if d[8] == 0 || i >= 65536 {
+                    continue;
+                }
+                let key = (d[3] & 3) | ((d[3] >> 9) & 1) << 2;
+                p.set_pipeline(&self.shadow_pipelines[&key]);
+                if d[6] != last_key {
+                    p.set_bind_group(1, &self.bgs[&d[6]], &[]);
+                    last_key = d[6];
+                }
+                p.set_vertex_buffer(0, g.vb.slice(..));
+                p.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
+                let (first, n) = (d[4].min(g.n), d[5].min(g.n.saturating_sub(d[4].min(g.n))));
+                let base = (i as u32) << 16;
+                p.draw_indexed(first..first + n, 0, base..base + d[8]);
+            }
+        }
         {
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -707,7 +861,7 @@ impl Gl {
             });
             p.set_bind_group(0, self.bg.as_ref(), &[]);
             let mut last_key = u32::MAX;
-            for (i, d) in draws.chunks_exact(12).enumerate() {
+            for (i, d) in draws[..nmain].chunks_exact(12).enumerate() {
                 let Some(g) = self.geoms.get(&d[0]) else { continue };
                 if d[8] == 0 || i >= 65536 {
                     continue;
@@ -726,6 +880,6 @@ impl Gl {
             }
         }
         self.queue.submit([enc.finish()]);
-        self.stats = [(draws.len() / 12) as f32, tris as f32, 0.0];
+        self.stats = [(nmain / 12) as f32, tris as f32, 0.0];
     }
 }

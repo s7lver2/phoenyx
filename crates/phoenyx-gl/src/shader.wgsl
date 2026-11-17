@@ -10,7 +10,7 @@ struct Globals {
     clear: vec4<f32>,    // color de fondo (lo usa el anfitrion Rust)
     dim: vec4<f32>,      // x ancho, y alto, z numero de luces
     amb: vec4<f32>,      // rgb luz ambiente (suma de AmbientLight * intensidad)
-    pad0: vec4<f32>,
+    pad0: vec4<f32>,     // x numero de sombras, y tipo de sombra (0 Basic, 1 PCF, 2 PCFSoft)
     pad1: vec4<f32>,
 };
 
@@ -36,7 +36,17 @@ struct Light {
     a: vec4<f32>,        // x tipo (0 direccional, 1 puntual, 2 hemisferio, 3 foco, 4 area rectangular), yzw color * intensidad (hemisferio: cielo)
     b: vec4<f32>,        // xyz posicion (vista; hemisferio: color del suelo), w distancia de corte
     c: vec4<f32>,        // x decaimiento, yzw direccion hacia la luz (vista; foco: eje desde el objetivo)
-    d: vec4<f32>,        // foco: x cos(angle), y cos(angle * (1 - penumbra))
+    d: vec4<f32>,        // foco: x cos(angle), y cos(angle * (1 - penumbra)); spot y direccional: z capa de sombra + 1 (0 sin sombra)
+};
+
+// una por luz con sombra: matriz de consulta (la de LightShadow.matrix), matriz de la camara de sombra y parametros
+struct Shadow {
+    mat: mat4x4<f32>,
+    vp: mat4x4<f32>,
+    p0: vec4<f32>,       // x bias, y normalBias, z radius, w ancho del mapa
+    p1: vec4<f32>,       // x alto del mapa
+    pad0: vec4<f32>,
+    pad1: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -72,6 +82,10 @@ struct VOut {
     @location(2) uv: vec2<f32>,
     @location(3) @interpolate(flat) di: u32,
     @location(4) color: vec3<f32>,
+    @location(5) sc0: vec4<f32>,
+    @location(6) sc1: vec4<f32>,
+    @location(7) sc2: vec4<f32>,
+    @location(8) sc3: vec4<f32>,
 };
 
 @vertex
@@ -110,9 +124,63 @@ fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @locatio
     out.vnormal = normalize(mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * nrm) * flip;   // beginnormal/defaultnormal: three normaliza por vertice
     out.uv = uv;
     out.di = di;
+    // shadowmap_vertex: posicion de mundo desplazada por normalBias a lo largo de la normal de mundo (inverseTransformDirection)
+    let nsh = u32(g.pad0.x);
+    if (nsh > 0u) {
+        let wp = o.model * p;
+        let nv = mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * nrm * flip;
+        let swn = normalize((vec4<f32>(nv, 0.0) * g.view).xyz);
+        var sc = array<vec4<f32>, 4>(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
+        for (var i = 0u; i < min(nsh, 4u); i = i + 1u) {
+            sc[i] = shadows[i].mat * (wp + vec4<f32>(swn * shadows[i].p0.y, 0.0));
+        }
+        out.sc0 = sc[0];
+        out.sc1 = sc[1];
+        out.sc2 = sc[2];
+        out.sc3 = sc[3];
+    }
     // color_vertex: color de vertice (si el material lo pide) por color de instancia
     out.color = select(vec3<f32>(1.0), color, materials[d.z].misc.w > 0.5) * icol;
     return out;
+}
+
+// ---- pasada de sombras: solo profundidad desde la camara de la luz (MeshDepthMaterial) ----
+struct SOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) di: u32,
+};
+
+@vertex
+fn vs_shadow(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec3<f32>, @builtin(instance_index) ii: u32) -> SOut {
+    let di = ii >> 16u;
+    let k = ii & 0xFFFFu;
+    let d = draws[di * 3u];
+    let d1 = draws[di * 3u + 1u];
+    let d2 = draws[di * 3u + 2u];
+    let o = objects[d.y];
+    var p = vec4<f32>(position, 1.0);
+    if (d1.w != 0xFFFFFFFFu) {
+        p = inst_mats[d1.w + k] * p;
+    }
+    var clip = shadows[d2.z].vp * (o.model * p);
+    clip.z = (clip.z + clip.w) * 0.5;
+    var out: SOut;
+    out.pos = clip;
+    out.uv = uv;
+    out.di = di;
+    return out;
+}
+
+// alphatest_fragment de la pasada de sombras: el alfa del mapa (la profundidad no usa la opacidad del material)
+@fragment
+fn fs_shadow(in: SOut) {
+    let d = draws[in.di * 3u];
+    let m = materials[d.z];
+    let a = textureSample(tex_map, smp_map, uvT(m, 0u, in.uv)).a;
+    if (a < m.tp.x) {
+        discard;
+    }
 }
 
 // ---- tonemapping_pars_fragment: ACESFilmicToneMapping ----
@@ -183,6 +251,8 @@ struct PhysMat {
 // ---- RectAreaLight: tablas LTC (lights_physical_pars_fragment), muestreadas con bilinear a mano (Rgba32Float no filtrable) ----
 @group(0) @binding(7) var ltc_1: texture_2d<f32>;
 @group(0) @binding(8) var ltc_2: texture_2d<f32>;
+@group(0) @binding(9) var<storage, read> shadows: array<Shadow>;
+@group(0) @binding(10) var shadow_map: texture_depth_2d_array;
 
 fn ltcSample(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
     let p = uv * 64.0 - 0.5;
@@ -236,6 +306,83 @@ fn LTC_Evaluate(N: vec3<f32>, V: vec3<f32>, P: vec3<f32>, mInv: mat3x3<f32>, r0:
     vff += LTC_EdgeVectorFormFactor(c2, c3);
     vff += LTC_EdgeVectorFormFactor(c3, c0);
     return vec3<f32>(LTC_ClippedSphereFormFactor(vff));
+}
+
+// ---- shadowmap_pars_fragment: texture2DCompare y getShadow (Basic, PCF y PCFSoft; el mapa de GL tiene la v hacia arriba y el de WebGPU hacia abajo) ----
+fn texture2DCompare(layer: i32, size: vec2<f32>, uv: vec2<f32>, compare: f32) -> f32 {
+    let isz = vec2<i32>(size);
+    let c = clamp(vec2<i32>(floor(uv * size)), vec2<i32>(0), isz - vec2<i32>(1));
+    return step(compare, textureLoad(shadow_map, vec2<i32>(c.x, isz.y - 1 - c.y), layer, 0));
+}
+
+fn getShadow(layer: i32, shadowCoordIn: vec4<f32>) -> f32 {
+    let sh = shadows[layer];
+    let shadowMapSize = vec2<f32>(sh.p0.w, sh.p1.x);
+    var shadow = 1.0;
+    var shadowCoord = shadowCoordIn;
+    shadowCoord = vec4<f32>(shadowCoord.xyz / shadowCoord.w, shadowCoord.w);
+    shadowCoord.z += sh.p0.x;
+    let inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 && shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0;
+    let frustumTest = inFrustum && shadowCoord.z <= 1.0;
+    if (frustumTest) {
+        let z = shadowCoord.z;
+        let texelSize = vec2<f32>(1.0) / shadowMapSize;
+        let st = g.pad0.y;
+        if (st > 1.5) {
+            // PCFSoftShadowMap
+            let dx = texelSize.x;
+            let dy = texelSize.y;
+            var uv = shadowCoord.xy;
+            let f = fract(uv * shadowMapSize + 0.5);
+            uv -= f * texelSize;
+            shadow = (
+                texture2DCompare(layer, shadowMapSize, uv, z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx, 0.0), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(0.0, dy), z) +
+                texture2DCompare(layer, shadowMapSize, uv + texelSize, z) +
+                mix(texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(-dx, 0.0), z), texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(2.0 * dx, 0.0), z), f.x) +
+                mix(texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(-dx, dy), z), texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(2.0 * dx, dy), z), f.x) +
+                mix(texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(0.0, -dy), z), texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(0.0, 2.0 * dy), z), f.y) +
+                mix(texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx, -dy), z), texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx, 2.0 * dy), z), f.y) +
+                mix(mix(texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(-dx, -dy), z), texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(2.0 * dx, -dy), z), f.x),
+                    mix(texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(-dx, 2.0 * dy), z), texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(2.0 * dx, 2.0 * dy), z), f.x), f.y)
+            ) * (1.0 / 9.0);
+        } else if (st > 0.5) {
+            // PCFShadowMap
+            let r = sh.p0.z;
+            let dx0 = -texelSize.x * r;
+            let dy0 = -texelSize.y * r;
+            let dx1 = texelSize.x * r;
+            let dy1 = texelSize.y * r;
+            let dx2 = dx0 / 2.0;
+            let dy2 = dy0 / 2.0;
+            let dx3 = dx1 / 2.0;
+            let dy3 = dy1 / 2.0;
+            let uv = shadowCoord.xy;
+            shadow = (
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx0, dy0), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(0.0, dy0), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx1, dy0), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx2, dy2), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(0.0, dy2), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx3, dy2), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx0, 0.0), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx2, 0.0), z) +
+                texture2DCompare(layer, shadowMapSize, uv, z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx3, 0.0), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx1, 0.0), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx2, dy3), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(0.0, dy3), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx3, dy3), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx0, dy1), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(0.0, dy1), z) +
+                texture2DCompare(layer, shadowMapSize, uv + vec2<f32>(dx1, dy1), z)
+            ) * (1.0 / 17.0);
+        } else {
+            shadow = texture2DCompare(layer, shadowMapSize, shadowCoord.xy, z);
+        }
+    }
+    return shadow;
 }
 
 // BRDF_GGX
@@ -399,6 +546,12 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
             } else {
                 // getDirectionalLightInfo
                 dirL = l.c.yzw;
+            }
+            // lights_fragment_begin: directLight.color *= receiveShadow ? getShadow(...) : 1.0 (d.z = capa de sombra + 1)
+            let sl = i32(l.d.z) - 1;
+            if (sl >= 0 && (dr.w & 256u) != 0u && any(col != vec3<f32>(0.0))) {
+                var scs = array<vec4<f32>, 4>(in.sc0, in.sc1, in.sc2, in.sc3);
+                col = col * getShadow(sl, scs[sl]);
             }
             if (any(col != vec3<f32>(0.0))) {
                 // RE_Direct_Physical

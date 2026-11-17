@@ -43,6 +43,8 @@ export class WebGLRenderer {
   private nextAttr = 1;
   private lostReported = false;
   private ltcDone = false;
+  /** como three: enabled, type (BasicShadowMap 0, PCFShadowMap 1, PCFSoftShadowMap 2), autoUpdate y needsUpdate */
+  shadowMap = { enabled: false, autoUpdate: true, needsUpdate: false, type: 1 };
   private disposed = false;
 
   constructor(params: { canvas?: HTMLCanvasElement; antialias?: boolean; alpha?: boolean; powerPreference?: string } = {}) {
@@ -180,13 +182,15 @@ export class WebGLRenderer {
     const alpha = scene.background && scene.background.isColor ? 1 : this.clearAlpha;
     const tm = this.toneMapping === ACESFilmicToneMapping ? 1 : 0;
     if (this.toneMapping !== NoToneMapping && !tm) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
-    const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: this.outputColorSpace }, (g) => this.geomId(g), (m) => this.textures.materialKey(m), (o) => this.instInfo(o));
+    const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: this.outputColorSpace, shadow: this.shadowMap }, (g) => this.geomId(g), (m) => this.textures.materialKey(m), (o) => this.instInfo(o));
     // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
     if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {
       this.gl.set_ltc(UniformsLib.LTC_FLOAT_1.image.data, UniformsLib.LTC_FLOAT_2.image.data);
       this.ltcDone = true;
     }
-    this.gl.frame(p.globals, p.objects, p.materials, p.lights, p.draws);
+    if (p.shadowAlloc) this.gl.set_shadow_maps(p.shadowAlloc[0], p.shadowAlloc[1]);
+    this.gl.frame(p.globals, p.objects, p.materials, p.lights, p.draws, p.shadows, p.shadowPasses, p.nDraws);
+    if (p.shadowRan) this.shadowMap.needsUpdate = false;
     const err = this.gl.take_error();
     if (err) console.error('[phoenyx] GPU:', err);
     this.info.render.calls += p.nDraws;

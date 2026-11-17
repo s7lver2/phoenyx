@@ -316,6 +316,44 @@ if (sceneId === 'modelos') {
   }));
 }
 
+// ---- sombras: linterna (SpotLight) y sol (DirectionalLight) con PCFSoftShadowMap como el juego ----
+if (sceneId === 'sombra-spot' || sceneId === 'sombra-sol') {
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // casters extra: una columna y una esfera para ver siluetas planas y curvas
+  const col = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2, 0.5), mMetal);
+  col.position.set(0.5, 1, 1.5);
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.5, 24, 16), mWall);
+  ball.position.set(-1.5, 0.5, 0.5);
+  scene.add(col, ball);
+  if (sceneId === 'sombra-spot') {
+    const sp = new THREE.SpotLight(0xfff6e0, 80, 22, 0.55, 0.75, 1.2);
+    sp.position.set(-1, 2.2, 4.5);
+    sp.target.position.set(0.5, 0, -2);
+    sp.castShadow = true;
+    sp.shadow.mapSize.set(1024, 1024);
+    sp.shadow.radius = 4;
+    sp.shadow.camera.near = 0.2;
+    sp.shadow.camera.far = 22;
+    sp.shadow.bias = -0.002;
+    scene.add(sp, sp.target);
+  } else {
+    scene.children.find((o) => o.material === mCeil).visible = false;
+    const sun = new THREE.DirectionalLight(0xfff0d8, 2.5);
+    sun.position.set(5, 7, 4);
+    sun.target.position.set(0, 0, 0);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -9, right: 9, top: 9, bottom: -9, near: 1, far: 30 });
+    sun.shadow.camera.updateProjectionMatrix();
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.04;
+    sun.shadow.radius = 3;
+    scene.add(sun, sun.target);
+  }
+  scene.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
+}
+
 // contrato de tools/fidelity/capture.mjs
 let timer = 0;
 const draw = () => renderer.render(scene, camera);
