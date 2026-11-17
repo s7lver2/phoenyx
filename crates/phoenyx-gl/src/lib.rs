@@ -163,10 +163,14 @@ fn blend_op(e: u32) -> wgpu::BlendOperation {
 
 /// WGSL de cada shader de usuario (cuerpo; la cabecera comun se antepone). Los ids los define packages/phoenyx/src/user-shaders.
 /// Devuelve (cuerpo WGSL, true si es un shader de Points: vertices leidos del buffer de la geometria, un cuadrado por punto).
-fn user_src(id: u32) -> Option<(&'static str, bool)> {
+fn user_src(id: u32) -> Option<(String, bool)> {
     Some(match id {
-        0 => (include_str!("user/prueba.wgsl"), false),
-        1 => (include_str!("user/waterjet.wgsl"), true),
+        0 => (include_str!("user/prueba.wgsl").to_string(), false),
+        1 => (include_str!("user/waterjet.wgsl").to_string(), true),
+        // niebla volumetrica del parking: 4 pasos (calidad baja) o 10
+        2 => (include_str!("user/parking_fog.wgsl").replace("@N@", "4"), false),
+        3 => (include_str!("user/parking_fog.wgsl").replace("@N@", "10"), false),
+        4 => (include_str!("user/parking_shaft.wgsl").to_string(), false),
         _ => return None,
     })
 }

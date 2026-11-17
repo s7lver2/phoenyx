@@ -40,5 +40,7 @@
   {"id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces"},
   {"id": "sh-prueba", "query": "renderer=@R&scene=sh-prueba&fog=exp", "advance": 2, "nota": "mecanismo de ShaderMaterial: uniformes por malla, textura, niebla, transparente/aditivo/opaco"},
   {"id": "sh-vhs", "query": "renderer=@R&scene=sh-vhs&fog=exp", "advance": 2, "nota": "FilmShader y VhsShader del juego tras OutputPass, tiempo fijo; el grano por pixel no se iguala bit a bit: se compara con compare.mjs --box 16"},
-  { "id": "sh-waterjet", "query": "renderer=@R&scene=sh-waterjet&fog=exp", "advance": 2, "nota": "WaterJet del juego: Points con gl_PointSize y gl_PointCoord" }
+  { "id": "sh-waterjet", "query": "renderer=@R&scene=sh-waterjet&fog=exp", "advance": 2, "nota": "WaterJet del juego: Points con gl_PointSize y gl_PointCoord" },
+  { "id": "sh-parking-atm", "query": "renderer=@R&scene=sh-parking-atm&fog=exp", "advance": 2, "nota": "niebla volumetrica y haz del parking, vistos desde fuera" },
+  { "id": "sh-parking-atm-dentro", "query": "renderer=@R&scene=sh-parking-atm&inside=1&fog=exp", "advance": 2, "nota": "la camara dentro del volumen de niebla (gl_FrontFacing y marcha de rayos)" }
 ]

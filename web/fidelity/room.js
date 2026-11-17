@@ -13,6 +13,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { makePrueba } from './games/prueba.js';
 import { makeJet } from './games/waterjet.js';
+import { makeParkingAtmosphere } from './games/parkingAtmosphere.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -589,6 +590,14 @@ if ((sceneId.startsWith('ao') && sceneId !== 'ao-normales') || sceneId.startsWit
 
 // ---- escena 'sh-waterjet': el chorro del juego (Points con su shader), 288 gotas con una semilla fija ----
 if (sceneId === 'sh-waterjet') scene.add(makeJet(THREE));
+
+// ---- escena 'sh-parking-atm': niebla volumetrica y haz del parking (calidad alta y baja), una luz con la camara fuera y otra dentro del volumen ----
+if (sceneId === 'sh-parking-atm') {
+  scene.add(makeParkingAtmosphere(THREE, false, { x: -1.4, y: 0, z: 1, time: 3.2, power: 1 }));
+  scene.add(makeParkingAtmosphere(THREE, true, { x: 2.2, y: 0, z: -1.5, time: 7.9, power: 0.6 }));
+  // la camara dentro del primer volumen: la niebla se ve por dentro
+  if (q.get('inside') === '1') camera.position.set(-1.4, 1.6, 1.8);
+}
 
 // ---- escena 'sh-vhs': RenderPass -> OutputPass -> FilmShader -> VhsShader del juego, con el tiempo fijo ----
 if (sceneId === 'sh-vhs') {

@@ -8,6 +8,7 @@ import { passShaderOf, blendOf } from './passes';
 import { userShaderOf } from './user-shaders/index';
 import './user-shaders/prueba';
 import './user-shaders/waterjet';
+import './user-shaders/parking-atmosphere';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
 import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace } from './three/constants.js';
