@@ -223,6 +223,22 @@ export class WebGLRenderer {
   }
 
   /** Ejecuta un ShaderMaterial de pantalla completa (lo que dibuja FullScreenQuad de los pases) con su WGSL portado. */
+  private flushQueued = false;
+  /** Un pase de pantalla completa: se graba en el Gl y se envia todo junto al acabar la tarea (o antes, si llega un fotograma o un cambio de target). */
+  private emitPass(id: number, uniforms: Float32Array, blend: Uint32Array, tex: Uint32Array) {
+    this.gl.pass(id, uniforms, blend, tex);
+    if (!this.flushQueued) {
+      this.flushQueued = true;
+      queueMicrotask(() => {
+        this.flushQueued = false;
+        if (!this.gl) return;
+        this.gl.flush();
+        const err = this.gl.take_error();
+        if (err) console.error('[phoenyx] GPU:', err);
+      });
+    }
+  }
+
   private renderPass(m: any) {
     this.syncTarget();
     // como render(): con autoClear el destino se limpia antes de dibujar (SMAAPass depende de ello: sus bordes sin borde se descartan)
@@ -231,13 +247,13 @@ export class WebGLRenderer {
     if (!def) {
       warnOnce('pass:' + (m.name || m.uuid), 'ShaderMaterial de pase sin version WGSL: se copia la entrada');
       const src = m.uniforms.tDiffuse?.value;
-      if (src) this.gl.pass(0, new Float32Array([1]), new Uint32Array([0, 201, 200, 100, 201, 200, 100]), new Uint32Array([this.textures.idOf(src)]));
+      if (src) this.emitPass(0, new Float32Array([1]), new Uint32Array([0, 201, 200, 100, 201, 200, 100]), new Uint32Array([this.textures.idOf(src)]));
       return;
     }
     const tex = def.tex.map((n) => this.textures.idOf(m.uniforms[n]?.value));
     while (tex.length < 5) tex.push(0);
     tex.push(def.depth ? this.textures.idOf(m.uniforms[def.depth]?.value) : 0);
-    this.gl.pass(def.id, new Float32Array(def.pack(m)), new Uint32Array(blendOf(m)), new Uint32Array(tex));
+    this.emitPass(def.id, new Float32Array(def.pack(m)), new Uint32Array(blendOf(m)), new Uint32Array(tex));
     const err = this.gl.take_error();
     if (err) console.error('[phoenyx] GPU:', err);
   }
@@ -248,7 +264,7 @@ export class WebGLRenderer {
     // pase que copia una textura con MeshBasicMaterial (UnrealBloomPass.renderToScreen)
     if (scene.isMesh && scene.material?.isMeshBasicMaterial && scene.material.map && !scene.geometry.index && scene.geometry.attributes.position.count === 3) {
       this.syncTarget();
-      this.gl.pass(0, new Float32Array([1]), new Uint32Array([0, 201, 200, 100, 201, 200, 100]), new Uint32Array([this.textures.idOf(scene.material.map)]));
+      this.emitPass(0, new Float32Array([1]), new Uint32Array([0, 201, 200, 100, 201, 200, 100]), new Uint32Array([this.textures.idOf(scene.material.map)]));
       return;
     }
     if (this.gl.is_lost()) {

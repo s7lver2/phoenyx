@@ -247,6 +247,10 @@ pub struct Gl {
     post_layout: wgpu::PipelineLayout,
     post_bgl: wgpu::BindGroupLayout,
     post_uniforms: wgpu::Buffer,
+    /// pases de pantalla completa grabados y aun sin enviar (un solo encoder y un solo submit por tanda)
+    post_enc: Option<wgpu::CommandEncoder>,
+    post_n: u32,
+    post_frame: Option<wgpu::SurfaceTexture>,
     post_pls: HashMap<(u32, [u32; 7], u32), PassPl>,
     samp_linear: wgpu::Sampler,
     samp_nearest: wgpu::Sampler,
@@ -438,7 +442,7 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
     let post_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&post_bgl)], immediate_size: 0 });
     let post_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: 1024 * 4,
+        size: (POST_STRIDE * POST_MAX) as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -500,19 +504,37 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         post_layout,
         post_bgl,
         post_uniforms,
+        post_enc: None,
+        post_n: 0,
+        post_frame: None,
         post_pls: HashMap::new(),
         samp_linear,
         samp_nearest,
     })
 }
 
+/// Bytes por pase en el buffer de uniformes de los pases (multiplo de 256, el alineado de los uniformes) y pases por tanda.
+const POST_STRIDE: u32 = 1024;
+const POST_MAX: u32 = 128;
+
 #[wasm_bindgen]
 impl Gl {
+    /// Envia a la GPU los pases de pantalla completa grabados (un solo submit). Lo llaman solos frame(), resize() y los
+    /// cambios de render targets; el renderer lo programa ademas al final de la tarea para que lo grabado llegue a pantalla.
+    pub fn flush(&mut self) {
+        if let Some(enc) = self.post_enc.take() {
+            self.queue.submit([enc.finish()]);
+        }
+        self.post_n = 0;
+        self.post_frame = None;
+    }
+
     pub fn resize(&mut self, w: u32, h: u32) {
         let (w, h) = (w.max(1), h.max(1));
         if (w, h) == (self.cfg.width, self.cfg.height) {
             return;
         }
+        self.flush();
         self.cfg.width = w;
         self.cfg.height = h;
         self.surface.configure(&self.device, &self.cfg);
@@ -522,6 +544,7 @@ impl Gl {
     /// Crea (o reemplaza) un render target. `color_id` es su id de textura (para leerlo como `map` o entrada de un pase);
     /// `depth_id` != 0 registra tambien su profundidad como textura legible. `fmt`: 1 RGBA16F, 2 RGBA8.
     pub fn create_target(&mut self, color_id: u32, w: u32, h: u32, fmt: u32, depth_id: u32) {
+        self.flush();
         let (w, h) = (w.max(1), h.max(1));
         let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
         let color = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -556,6 +579,7 @@ impl Gl {
     }
 
     pub fn drop_target(&mut self, color_id: u32) {
+        self.flush();
         if let Some(t) = self.targets.remove(&color_id) {
             self.textures.remove(&t.color_id);
             if t.depth_id != 0 {
@@ -978,14 +1002,19 @@ impl Gl {
             });
             self.post_pls.insert(key, PassPl { pl });
         }
-        let n = uniforms.len().min(1024);
-        self.queue.write_buffer(&self.post_uniforms, 0, bytemuck::cast_slice(&uniforms[..n]));
+        if self.post_n >= POST_MAX {
+            self.flush();
+        }
+        // cada pase de la tanda lee sus uniformes de su propio tramo del buffer (los write_buffer llegan todos antes del submit)
+        let off = (self.post_n * POST_STRIDE) as u64;
+        let n = uniforms.len().min((POST_STRIDE / 4) as usize);
+        self.queue.write_buffer(&self.post_uniforms, off, bytemuck::cast_slice(&uniforms[..n]));
         let view_of = |i: usize| -> &wgpu::TextureView { tex.get(i).and_then(|id| self.textures.get(id)).unwrap_or(&self.white) };
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.post_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.post_uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.post_uniforms, offset: off, size: wgpu::BufferSize::new(POST_STRIDE as u64) }) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view_of(0)) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(view_of(1)) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(view_of(2)) },
@@ -996,20 +1025,27 @@ impl Gl {
                 wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&self.samp_nearest) },
             ],
         });
-        let (view, _frame) = match self.targets.get(&self.cur) {
-            Some(t) => (t.view.clone(), None),
-            None => match self.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => (f.texture.create_view(&Default::default()), Some(f)),
-                _ => {
-                    self.surface.configure(&self.device, &self.cfg);
-                    return false;
+        let view = match self.targets.get(&self.cur) {
+            Some(t) => t.view.clone(),
+            None => {
+                if self.post_frame.is_none() {
+                    match self.surface.get_current_texture() {
+                        wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => self.post_frame = Some(f),
+                        _ => {
+                            self.surface.configure(&self.device, &self.cfg);
+                            return false;
+                        }
+                    }
                 }
-            },
+                self.post_frame.as_ref().unwrap().texture.create_view(&Default::default())
+            }
         };
         let pend = self.pending.remove(&self.cur).unwrap_or_default();
-        let mut enc = self.device.create_command_encoder(&Default::default());
+        if self.post_enc.is_none() {
+            self.post_enc = Some(self.device.create_command_encoder(&Default::default()));
+        }
         {
-            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut p = self.post_enc.as_mut().unwrap().begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -1029,7 +1065,7 @@ impl Gl {
             p.set_bind_group(0, &bg, &[]);
             p.draw(0..3, 0..1);
         }
-        self.queue.submit([enc.finish()]);
+        self.post_n += 1;
         true
     }
 
@@ -1039,6 +1075,8 @@ impl Gl {
         if globals.len() < GLOBALS_F {
             return false;
         }
+        // lo grabado por los pases va antes que este fotograma (y sus escrituras de buffers)
+        self.flush();
         self.clear = [globals[44] as f64, globals[45] as f64, globals[46] as f64, globals[47] as f64];
         self.queue.write_buffer(&self.globals, 0, bytemuck::cast_slice(&globals[..GLOBALS_F]));
         let mut grew = self.objects.write(&self.device, &self.queue, bytemuck::cast_slice(objects));

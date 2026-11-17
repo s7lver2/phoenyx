@@ -1,0 +1,62 @@
+{
+  "url": "http://localhost:5200/fidelity",
+  "preset": "high",
+  "throttle": 4,
+  "perf": {
+    "bloom": {
+      "drawCalls": 36,
+      "triangles": 258,
+      "geometries": 22,
+      "textures": 13,
+      "frameMsMedian": 5.9,
+      "frameMsP95": 9.6,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "smaa": {
+      "drawCalls": 26,
+      "triangles": 248,
+      "geometries": 22,
+      "textures": 6,
+      "frameMsMedian": 5.3,
+      "frameMsP95": 7.5,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "ao": {
+      "drawCalls": 70,
+      "triangles": 23473,
+      "geometries": 25,
+      "textures": 31,
+      "frameMsMedian": 10.9,
+      "frameMsP95": 17.1,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "pool-fx": {
+      "drawCalls": 118,
+      "triangles": 47163,
+      "geometries": 25,
+      "textures": 32,
+      "frameMsMedian": 14.5,
+      "frameMsP95": 33.1,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "pool-fx-sinao": {
+      "drawCalls": 66,
+      "triangles": 23589,
+      "geometries": 25,
+      "textures": 26,
+      "frameMsMedian": 10.8,
+      "frameMsP95": 16.9,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    }
+  }
+}
