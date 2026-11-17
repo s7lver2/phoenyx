@@ -10,6 +10,10 @@ export interface UserShaderDef {
   pack(m: any): number[];
   /** texturas t0..t4 (hasta 5), en el orden que lee el WGSL */
   textures?(m: any): any[];
+  /** el shader dibuja `Points`: un cuadrado por vertice (user/_points.wgsl) */
+  points?: boolean;
+  /** atributos de la geometria que van a cada hueco del vertice (normal 3, uv 2, color 3 floats): nombres en orden, cada uno aporta sus componentes */
+  attributes?: { normal?: string[]; uv?: string[]; color?: string[] };
 }
 
 const registry = new Map<string, UserShaderDef>();

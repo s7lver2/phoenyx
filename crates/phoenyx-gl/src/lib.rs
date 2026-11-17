@@ -162,9 +162,11 @@ fn blend_op(e: u32) -> wgpu::BlendOperation {
 }
 
 /// WGSL de cada shader de usuario (cuerpo; la cabecera comun se antepone). Los ids los define packages/phoenyx/src/user-shaders.
-fn user_src(id: u32) -> Option<&'static str> {
+/// Devuelve (cuerpo WGSL, true si es un shader de Points: vertices leidos del buffer de la geometria, un cuadrado por punto).
+fn user_src(id: u32) -> Option<(&'static str, bool)> {
     Some(match id {
-        0 => include_str!("user/prueba.wgsl"),
+        0 => (include_str!("user/prueba.wgsl"), false),
+        1 => (include_str!("user/waterjet.wgsl"), true),
         _ => return None,
     })
 }
@@ -173,6 +175,8 @@ struct Geom {
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
     n: u32,
+    /// vertices (los Points de un shader de usuario leen el buffer de vertices como almacenamiento)
+    nv: u32,
 }
 
 /// Buffer de almacenamiento que crece cuando hace falta (y avisa para rehacer el bind group).
@@ -265,6 +269,10 @@ pub struct Gl {
     /// shaders de usuario (ShaderMaterial portados): modulo por id y pipeline por (id, banderas, formato, mezcla)
     user_modules: HashMap<u32, wgpu::ShaderModule>,
     user_pls: HashMap<(u32, u32, u32, u32, u32), wgpu::RenderPipeline>,
+    /// Points de shaders de usuario: layout con un tercer grupo (vertices como almacenamiento) y un bind group por geometria
+    layout_pts: wgpu::PipelineLayout,
+    geom_bgl: wgpu::BindGroupLayout,
+    geom_bgs: HashMap<u32, wgpu::BindGroup>,
     samp_linear: wgpu::Sampler,
     samp_nearest: wgpu::Sampler,
 }
@@ -381,6 +389,20 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
         bind_group_layouts: &[Some(&bgl), Some(&tex_bgl)],
+        immediate_size: 0,
+    });
+    let geom_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            count: None,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+        }],
+    });
+    let layout_pts = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&bgl), Some(&tex_bgl), Some(&geom_bgl)],
         immediate_size: 0,
     });
     let globals = device.create_buffer(&wgpu::BufferDescriptor {
@@ -524,6 +546,9 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         post_pls: HashMap::new(),
         user_modules: HashMap::new(),
         user_pls: HashMap::new(),
+        layout_pts,
+        geom_bgl,
+        geom_bgs: HashMap::new(),
         samp_linear,
         samp_nearest,
     })
@@ -657,14 +682,15 @@ impl Gl {
         let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&v),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
         });
         let ib = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        self.geoms.insert(id, Geom { vb, ib, n: indices.len() as u32 });
+        self.geoms.insert(id, Geom { vb, ib, n: indices.len() as u32, nv: n as u32 });
+        self.geom_bgs.remove(&id);
     }
 
     /// Sube una textura RGBA de 8 bits (filas ya en el orden de `flipY`) y calcula sus mipmaps si `mips`.
@@ -841,6 +867,7 @@ impl Gl {
 
     pub fn drop_geometry(&mut self, id: u32) {
         self.geoms.remove(&id);
+        self.geom_bgs.remove(&id);
     }
 
     pub fn is_lost(&self) -> bool {
@@ -931,20 +958,19 @@ impl Gl {
 
     /// Pipeline de un dibujo de usuario: `flags` como los del material estandar, `b0`/`b1` = mezcla empaquetada (ver pack.ts).
     fn ensure_user_pipeline(&mut self, shader: u32, flags: u32, fmt: u32, b0: u32, b1: u32) {
-        let flags = flags & 31;
+        let flags = flags & (31 | 2048);
         let key = (shader, flags, fmt, b0, b1);
         if self.user_pls.contains_key(&key) {
             return;
         }
-        let Some(body) = user_src(shader) else { return };
+        let Some((body, points)) = user_src(shader) else { return };
         if !self.user_modules.contains_key(&shader) {
-            let src = format!("{}
-{}", include_str!("user/_header.wgsl"), body);
+            let src = format!("{}\n{}\n{}", include_str!("user/_header.wgsl"), if points { include_str!("user/_points.wgsl") } else { "" }, body);
             let m = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("phoenyx-user"), source: wgpu::ShaderSource::Wgsl(src.into()) });
             self.user_modules.insert(shader, m);
         }
         let module = &self.user_modules[&shader];
-        let cull = if flags & 1 != 0 { None } else { Some(wgpu::Face::Back) };
+        let cull = if flags & 1 != 0 || points { None } else { Some(wgpu::Face::Back) };
         let cw = (flags & 2 != 0) != (fmt != 0);
         let front = if cw { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw };
         // mezcla: b0 = srcRGB | dstRGB << 8 | ecuacion << 16 | modo << 24; b1 = srcA | dstA << 8 | ecuacionA << 16
@@ -954,12 +980,12 @@ impl Gl {
         });
         let pl = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
-            layout: Some(&self.layout),
+            layout: Some(if points { &self.layout_pts } else { &self.layout }),
             vertex: wgpu::VertexState {
                 module,
                 entry_point: Some("vs_user"),
                 compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
+                buffers: if points { &[] } else { &[Some(wgpu::VertexBufferLayout {
                     array_stride: 68,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -968,7 +994,7 @@ impl Gl {
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 2 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 32, shader_location: 3 },
                     ],
-                })],
+                })] },
             },
             fragment: Some(wgpu::FragmentState {
                 module,
@@ -1252,6 +1278,12 @@ impl Gl {
         for d in draws[..nmain].chunks_exact(12) {
             if d[3] & 1024 != 0 {
                 self.ensure_user_pipeline(d[10], d[3], tfmt, d[9], d[11]);
+                if d[3] & 2048 != 0 && !self.geom_bgs.contains_key(&d[0]) {
+                    if let Some(g) = self.geoms.get(&d[0]) {
+                        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &self.geom_bgl, entries: &[entry(0, &g.vb)] });
+                        self.geom_bgs.insert(d[0], bg);
+                    }
+                }
             } else {
                 self.ensure_pipeline(d[3], tfmt);
             }
@@ -1348,8 +1380,22 @@ impl Gl {
                 }
                 if d[3] & 1024 != 0 {
                     // dibujo de usuario: sin pipeline (shader no registrado) no se pinta
-                    let Some(up) = self.user_pls.get(&(d[10], d[3] & 31, tfmt, d[9], d[11])) else { continue };
+                    let Some(up) = self.user_pls.get(&(d[10], d[3] & (31 | 2048), tfmt, d[9], d[11])) else { continue };
                     p.set_pipeline(up);
+                    if d[6] != last_key {
+                        p.set_bind_group(1, &self.bgs[&d[6]], &[]);
+                        last_key = d[6];
+                    }
+                    if d[3] & 2048 != 0 {
+                        // Points: seis vertices por punto, leidos del buffer de la geometria (grupo 2)
+                        let Some(bg) = self.geom_bgs.get(&d[0]) else { continue };
+                        p.set_bind_group(2, bg, &[]);
+                        let first = d[4].min(g.nv);
+                        let n = d[5].min(g.nv - first);
+                        let base = (i as u32) << 16;
+                        p.draw(first * 6..(first + n) * 6, base..base + 1);
+                        continue;
+                    }
                 } else {
                     p.set_pipeline(&self.pipelines[&((d[3] & 31) | (tfmt << 5))]);
                 }

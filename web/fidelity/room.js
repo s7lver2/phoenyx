@@ -12,6 +12,7 @@ import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { makePrueba } from './games/prueba.js';
+import { makeJet } from './games/waterjet.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -585,6 +586,9 @@ if ((sceneId.startsWith('ao') && sceneId !== 'ao-normales') || sceneId.startsWit
   } else composer.addPass(new OutputPass());
   draw = () => composer.render(0);
 }
+
+// ---- escena 'sh-waterjet': el chorro del juego (Points con su shader), 288 gotas con una semilla fija ----
+if (sceneId === 'sh-waterjet') scene.add(makeJet(THREE));
 
 // ---- escena 'sh-vhs': RenderPass -> OutputPass -> FilmShader -> VhsShader del juego, con el tiempo fijo ----
 if (sceneId === 'sh-vhs') {

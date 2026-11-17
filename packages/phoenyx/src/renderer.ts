@@ -7,6 +7,7 @@ import { TextureCache } from './textures';
 import { passShaderOf, blendOf } from './passes';
 import { userShaderOf } from './user-shaders/index';
 import './user-shaders/prueba';
+import './user-shaders/waterjet';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
 import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace } from './three/constants.js';
@@ -214,6 +215,8 @@ export class WebGLRenderer {
     const b = blendOf(m);
     return {
       id: def.id,
+      points: !!def.points,
+      attributes: def.attributes ?? null,
       values: [m.fog ? 1 : 0, 0, 0, 0, ...def.pack(m)],
       texKey: this.textures.listKey(def.textures ? def.textures(m) : []),
       b0: b[1] | (b[2] << 8) | (b[3] << 16) | (b[0] << 24),
@@ -231,7 +234,7 @@ export class WebGLRenderer {
   }
 
   /** Sube la geometria a la GPU si es nueva o cambio (version de sus atributos) y devuelve su id. */
-  private geomId(g: any): number {
+  private geomId(g: any, slots?: { normal?: string[]; uv?: string[]; color?: string[] } | null): number {
     const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv, col = g.attributes.color;
     const aid = (a: any) => {
       if (!a) return 0;
@@ -239,7 +242,8 @@ export class WebGLRenderer {
       if (!i) this.attrIds.set(a, (i = this.nextAttr++));
       return `${i}.${(a.data ?? a).version}.${a.count}`;
     };
-    const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(col)}:${aid(g.index)}:${aid(g.attributes.skinIndex)}:${aid(g.attributes.skinWeight)}`;
+    const slotKey = slots ? ['normal', 'uv', 'color'].map((k) => (slots[k] ?? []).map((n) => aid(g.attributes[n])).join('+')).join('/') : '';
+    const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(col)}:${aid(g.index)}:${aid(g.attributes.skinIndex)}:${aid(g.attributes.skinWeight)}:${slotKey}`;
     let rec = this.ids.get(g);
     if (rec && rec.key === key) return rec.id;
     const f32 = (a: any, n: number) => {
@@ -280,7 +284,18 @@ export class WebGLRenderer {
         skinW[i * 4] = sw.getX(i); skinW[i * 4 + 1] = sw.getY(i); skinW[i * 4 + 2] = sw.getZ(i); skinW[i * 4 + 3] = sw.getW(i);
       }
     }
-    this.gl.set_geometry(rec.id, f32(pos, 3), nor ? f32(nor, 3) : this.normalsOf(g), f32(uv, 2), f32(g.attributes.color, 3), index, skinIdx, skinW);
+    // atributos propios de un shader de usuario: sus componentes se reparten en los huecos normal / uv / color del vertice
+    const fromNames = (names: string[], k: number) => {
+      const out = new Float32Array(pos.count * k);
+      let c = 0;
+      for (const n of names) {
+        const a = g.attributes[n];
+        if (!a) { c += 1; continue; }
+        for (let j = 0; j < a.itemSize && c < k; j++, c++) for (let i = 0; i < pos.count; i++) out[i * k + c] = j === 0 ? a.getX(i) : j === 1 ? a.getY(i) : j === 2 ? a.getZ(i) : a.getW(i);
+      }
+      return out;
+    };
+    this.gl.set_geometry(rec.id, f32(pos, 3), slots?.normal ? fromNames(slots.normal, 3) : nor ? f32(nor, 3) : this.normalsOf(g), slots?.uv ? fromNames(slots.uv, 2) : f32(uv, 2), slots?.color ? fromNames(slots.color, 3) : f32(g.attributes.color, 3), index, skinIdx, skinW);
     return rec.id;
   }
 
@@ -348,7 +363,7 @@ export class WebGLRenderer {
     if (!rtOut && this.toneMapping !== NoToneMapping && this.toneMapping !== ACESFilmicToneMapping) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
     this.renderCount++;
     const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, // con scene.background (Color) three limpia siempre, segun autoClearColor/autoClearDepth aunque autoClear sea false
- clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, shadow: this.shadowMap }, (g) => this.geomId(g), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m));
+ clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, size: rtOut ? [Math.max(1, Math.floor(this.rt.width)), Math.max(1, Math.floor(this.rt.height))] : [this.domElement.width, this.domElement.height], shadow: this.shadowMap }, (g, slots) => this.geomId(g, slots), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m));
     // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
     if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {
       this.gl.set_ltc(UniformsLib.LTC_FLOAT_1.image.data, UniformsLib.LTC_FLOAT_2.image.data);

@@ -57,6 +57,8 @@ export interface FrameState {
   linear?: boolean;
   /** bit 0: limpiar color, bit 1: limpiar profundidad (autoClear de three) */
   clearFlags?: number;
+  /** ancho y alto en pixeles del destino (los Points de los shaders de usuario miden su cuadrado en pixeles) */
+  size?: [number, number];
   shadow: { enabled: boolean; type: number; autoUpdate: boolean; needsUpdate: boolean };
 }
 
@@ -101,7 +103,7 @@ export class Packer {
   forceShadows = false;
   private sSize = 0;
 
-  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; values: number[]; texKey: number; b0: number; b1: number } | null): Packed {
+  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any, slots?: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; points: boolean; attributes: any; values: number[]; texKey: number; b0: number; b1: number } | null): Packed {
     if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
     if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
     this.projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -217,7 +219,7 @@ export class Packer {
       objs.set(o.matrixWorld.elements, base);
       const n = this.nm.elements;
       objs.set([n[0], n[1], n[2], 0, n[3], n[4], n[5], 0, n[6], n[7], n[8], 0], base + 16);
-      const gid = geomId(it.geometry);
+      const gid = geomId(it.geometry, user ? user.attributes : null);
       const tk = user ? user.texKey : texKey(m);
       let mi: number;
       if (user) {
@@ -245,9 +247,9 @@ export class Packer {
         common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
       const emit = (fl: number) => {
         if (user) {
-          // bit 1024: dibujo de usuario; la mezcla va empaquetada en las palabras 9 y 11 y el id del shader en la 10
-          draws.push(gid, no, mi, fl | 1024, first, idx, tk, 0xffffffff, 1, user.b0, user.id, user.b1);
-          triangles += idx / 3;
+          // bit 1024: dibujo de usuario (bit 2048: Points); la mezcla va empaquetada en las palabras 9 y 11 y el id del shader en la 10
+          draws.push(gid, no, mi, fl | 1024 | (o.isPoints ? 2048 : 0), first, idx, tk, 0xffffffff, 1, user.b0, user.id, user.b1);
+          if (!o.isPoints) triangles += idx / 3;
         } else if (!ii) {
           draws.push(gid, no, mi, fl, first, idx, tk, 0xffffffff, 1, 0, 0, bk);
           triangles += idx / 3;
@@ -260,7 +262,7 @@ export class Packer {
           }
         }
       };
-      if (m.transparent && m.side === DoubleSide && !m.forceSinglePass) {
+      if (m.transparent && m.side === DoubleSide && !m.forceSinglePass && !o.isPoints) {
         // transparente de doble cara: primero las traseras (material BackSide), luego las frontales
         emit(bits(true, false, false));
         emit(bits(false, false, false));
@@ -400,6 +402,8 @@ export class Packer {
     g[50] = Math.min(count, MAX_LIGHTS);
     g[56] = nLayers;
     g[58] = st.linear ? 1 : 0;
+    g[60] = st.size?.[0] ?? 1;
+    g[61] = st.size?.[1] ?? 1;
     g[48] = st.clearFlags ?? 3;
     g[57] = st.shadow.type === 3 ? 2 : st.shadow.type;
 
@@ -444,7 +448,7 @@ export class Packer {
       else if (object.isLOD) {
         if (object.autoUpdate === true) object.update(camera);
       } else if (object.isLight) this.lights.push(object);
-      else if (object.isMesh) {
+      else if (object.isMesh || (object.isPoints && object.material.isShaderMaterial)) {
         if (object.isSkinnedMesh && (!object.skeleton || !object.geometry.attributes.skinIndex)) warnOnce('skin-sin-datos', 'SkinnedMesh sin skeleton o sin skinIndex/skinWeight: se dibuja como Mesh');
         if (!object.frustumCulled || this.frustum.intersectsObject(object)) {
           // z de ordenacion: centro de la esfera envolvente, como WebGLRenderer.projectObject
