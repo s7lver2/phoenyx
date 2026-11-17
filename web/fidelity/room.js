@@ -11,6 +11,7 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
 const q = new URLSearchParams(location.search);
@@ -638,6 +639,43 @@ if (sceneId === 'skin' || sceneId === 'skin-sombra' || sceneId === 'skin-normale
     scene.add(sun, sun.target);
     scene.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
   }
+}
+
+// ---- escena 'entidades': los GLB con esqueleto del juego, clonados con SkeletonUtils y animados con AnimationMixer ----
+// el mezclador avanza con pasos fijos al cargar (idle -> fundido cruzado a otro clip con timeScale 1, 0.5, 0 y -1): la pose no depende del numero de fotogramas
+if (sceneId === 'entidades' || sceneId === 'entidades-pool') {
+  const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+  // [url, altura, x de cada clon, clip inicial, clip final por clon, timeScale por clon]
+  const defs = [
+    ['/models/backrooms/hazmat.glb', 1.8, [-3.6, -2.2], 'Neutral Idle', ['Slow Run', 'Reloading'], [1, 0.5]],
+    ['/models/backrooms/partygoer.glb', 1.8, [-0.7, 0.7], 'Happy Idle', ['Macarena Dance', 'Dwarf Walk'], [0, -1]],
+    ['/models/parking/skinwalker.glb', 1.8, [2.2, 3.6], 'idle', ['attack', 'run'], [1, 0.5]],
+  ];
+  modelsDone = Promise.all(defs.map(async ([url, height, xs, first, seconds, scales], d) => {
+    const gltf = await loader.loadAsync(url);
+    xs.forEach((x, i) => {
+      const root = SkeletonUtils.clone(gltf.scene);
+      root.traverse((o) => { if (o.isSkinnedMesh) o.frustumCulled = false; });
+      scene.add(root);
+      const mixer = new THREE.AnimationMixer(root);
+      const a = mixer.clipAction(THREE.AnimationClip.findByName(gltf.animations, first));
+      a.play();
+      mixer.update(0.3 + 0.17 * i);
+      const b = mixer.clipAction(THREE.AnimationClip.findByName(gltf.animations, seconds[i]));
+      b.timeScale = scales[i];
+      a.fadeOut(0.6);
+      b.reset().fadeIn(0.6).play();
+      mixer.update(0.25);
+      // se escala segun la caja de la pose (las mallas con piel la calculan con los huesos)
+      root.updateMatrixWorld(true);
+      root.traverse((o) => { if (o.isSkinnedMesh) (o.skeleton.update(), o.computeBoundingBox()); });
+      const box = new THREE.Box3().setFromObject(root);
+      const k = height / (box.max.y - box.min.y);
+      root.scale.setScalar(k);
+      root.position.set(x, 0.1 - box.min.y * k, 0.8 - d * 0.6);
+      root.rotation.y = 0.35 - i * 0.7;
+    });
+  }));
 }
 
 // contrato de tools/fidelity/capture.mjs
