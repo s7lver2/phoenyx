@@ -17,6 +17,41 @@ fn entry(b: u32, buf: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry { binding: b, resource: buf.as_entire_binding() }
 }
 
+
+fn srgb_to_lin(v: u8) -> f32 {
+    let c = v as f32 / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+fn lin_to_srgb(x: f32) -> u8 {
+    let c = x.clamp(0.0, 1.0);
+    let s = if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+    (s * 255.0 + 0.5) as u8
+}
+
+/// Siguiente nivel de mipmap: caja 2x2 (en espacio lineal si la textura es sRGB; el alfa siempre lineal).
+fn downsample(src: &[u8], w: u32, h: u32, srgb: bool, lut: &[f32; 256]) -> (Vec<u8>, u32, u32) {
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    let mut out = vec![0u8; (nw * nh * 4) as usize];
+    for y in 0..nh {
+        for x in 0..nw {
+            let (x0, x1) = ((x * 2).min(w - 1), (x * 2 + 1).min(w - 1));
+            let (y0, y1) = ((y * 2).min(h - 1), (y * 2 + 1).min(h - 1));
+            let px = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
+            for c in 0..4 {
+                let mut acc = 0.0f32;
+                for &(px_x, px_y) in &px {
+                    let v = src[((px_y * w + px_x) * 4 + c) as usize];
+                    acc += if srgb && c < 3 { lut[v as usize] } else { v as f32 / 255.0 };
+                }
+                let m = acc * 0.25;
+                out[((y * nw + x) * 4 + c) as usize] = if srgb && c < 3 { lin_to_srgb(m) } else { (m * 255.0 + 0.5) as u8 };
+            }
+        }
+    }
+    (out, nw, nh)
+}
+
 fn err<E: std::fmt::Display>(e: E) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
@@ -70,6 +105,14 @@ pub struct Gl {
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     bgl: wgpu::BindGroupLayout,
+    tex_bgl: wgpu::BindGroupLayout,
+    textures: HashMap<u32, wgpu::TextureView>,
+    samplers: HashMap<u32, wgpu::Sampler>,
+    bg_desc: HashMap<u32, ([u32; 5], [u32; 5])>,
+    bgs: HashMap<u32, wgpu::BindGroup>,
+    white: wgpu::TextureView,
+    default_sampler: wgpu::Sampler,
+    lut: Box<[f32; 256]>,
     globals: wgpu::Buffer,
     objects: Growable,
     materials: Growable,
@@ -150,9 +193,29 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
             st(4, ro, both),
         ],
     });
+    let tex_entry = |b: u32| wgpu::BindGroupLayoutEntry {
+        binding: b,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        count: None,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+    };
+    let samp_entry = |b: u32| wgpu::BindGroupLayoutEntry {
+        binding: b,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        count: None,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+    };
+    let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[tex_entry(0), tex_entry(1), tex_entry(2), tex_entry(3), tex_entry(4), samp_entry(5), samp_entry(6), samp_entry(7), samp_entry(8), samp_entry(9)],
+    });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
-        bind_group_layouts: &[Some(&bgl)],
+        bind_group_layouts: &[Some(&bgl), Some(&tex_bgl)],
         immediate_size: 0,
     });
     let globals = device.create_buffer(&wgpu::BufferDescriptor {
@@ -161,7 +224,42 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    let white_tex = device.create_texture_with_data(
+        &queue,
+        &wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &[255, 255, 255, 255],
+    );
+    let white = white_tex.create_view(&Default::default());
+    let default_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let mut lut = Box::new([0f32; 256]);
+    for (i, v) in lut.iter_mut().enumerate() {
+        *v = srgb_to_lin(i as u8);
+    }
     Ok(Gl {
+        tex_bgl,
+        textures: HashMap::new(),
+        samplers: HashMap::new(),
+        bg_desc: HashMap::new(),
+        bgs: HashMap::new(),
+        white,
+        default_sampler,
+        lut,
         depth: depth_view(&device, w, h),
         objects: Growable::new(&device, 4096),
         materials: Growable::new(&device, 1024),
@@ -229,6 +327,98 @@ impl Gl {
             usage: wgpu::BufferUsages::INDEX,
         });
         self.geoms.insert(id, Geom { vb, ib, n: indices.len() as u32 });
+    }
+
+    /// Sube una textura RGBA de 8 bits (filas ya en el orden de `flipY`) y calcula sus mipmaps si `mips`.
+    pub fn set_texture(&mut self, id: u32, w: u32, h: u32, rgba: &[u8], srgb: bool, mips: bool) {
+        if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+            return;
+        }
+        let levels = if mips { 32 - w.max(h).leading_zeros() } else { 1 };
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: if srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm },
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let mut data = rgba[..(w * h * 4) as usize].to_vec();
+        let (mut cw, mut ch) = (w, h);
+        for lvl in 0..levels {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: lvl, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &data,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(cw * 4), rows_per_image: Some(ch) },
+                wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 },
+            );
+            if lvl + 1 < levels {
+                let (d, nw, nh) = downsample(&data, cw, ch, srgb, &self.lut);
+                data = d;
+                cw = nw;
+                ch = nh;
+            }
+        }
+        self.textures.insert(id, tex.create_view(&Default::default()));
+        self.bgs.clear();
+    }
+
+    pub fn drop_texture(&mut self, id: u32) {
+        self.textures.remove(&id);
+        self.bgs.clear();
+    }
+
+    /// `wrap`: 0 repetir, 1 sujetar al borde, 2 espejo. `mip`: 0 sin mipmaps, 1 vecino mas cercano, 2 lineal.
+    pub fn set_sampler(&mut self, id: u32, wrap_s: u32, wrap_t: u32, mag_linear: bool, min_linear: bool, mip: u32, anisotropy: u32) {
+        let wrap = |w: u32| match w {
+            1 => wgpu::AddressMode::ClampToEdge,
+            2 => wgpu::AddressMode::MirrorRepeat,
+            _ => wgpu::AddressMode::Repeat,
+        };
+        let f = |l: bool| if l { wgpu::FilterMode::Linear } else { wgpu::FilterMode::Nearest };
+        let all_linear = mag_linear && min_linear && mip == 2;
+        let samp = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wrap(wrap_s),
+            address_mode_v: wrap(wrap_t),
+            mag_filter: f(mag_linear),
+            min_filter: f(min_linear),
+            mipmap_filter: if mip == 2 { wgpu::MipmapFilterMode::Linear } else { wgpu::MipmapFilterMode::Nearest },
+            lod_max_clamp: if mip == 0 { 0.0 } else { 32.0 },
+            anisotropy_clamp: if all_linear { anisotropy.clamp(1, 16) as u16 } else { 1 },
+            ..Default::default()
+        });
+        self.samplers.insert(id, samp);
+        self.bgs.clear();
+    }
+
+    /// Define el conjunto de texturas y muestreadores (ids; 0 = ninguno) de una clave de material:
+    /// `[map, normalMap, roughnessMap, emissiveMap, bumpMap]`.
+    pub fn set_material_textures(&mut self, key: u32, tex: &[u32], samp: &[u32]) {
+        if tex.len() < 5 || samp.len() < 5 {
+            return;
+        }
+        self.bg_desc.insert(key, ([tex[0], tex[1], tex[2], tex[3], tex[4]], [samp[0], samp[1], samp[2], samp[3], samp[4]]));
+        self.bgs.remove(&key);
+    }
+
+    fn ensure_tex_bg(&mut self, key: u32) {
+        if self.bgs.contains_key(&key) {
+            return;
+        }
+        let (t, sm) = self.bg_desc.get(&key).copied().unwrap_or(([0; 5], [0; 5]));
+        let view = |i: u32| self.textures.get(&i).unwrap_or(&self.white);
+        let samp = |i: u32| self.samplers.get(&i).unwrap_or(&self.default_sampler);
+        let mut entries: Vec<wgpu::BindGroupEntry> = Vec::with_capacity(10);
+        for k in 0..5 {
+            entries.push(wgpu::BindGroupEntry { binding: k as u32, resource: wgpu::BindingResource::TextureView(view(t[k])) });
+        }
+        for k in 0..5 {
+            entries.push(wgpu::BindGroupEntry { binding: 5 + k as u32, resource: wgpu::BindingResource::Sampler(samp(sm[k])) });
+        }
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &self.tex_bgl, entries: &entries });
+        self.bgs.insert(key, bg);
     }
 
     pub fn drop_geometry(&mut self, id: u32) {
@@ -316,7 +506,7 @@ impl Gl {
     }
 
     /// Dibuja un fotograma. Los formatos de los arrays: ver docs/FASE1.md.
-    /// `draws`: 8 u32 por dibujo `[geometria, objeto, material, flags, primer indice, n indices, 0, 0]`, ya en el orden final de pintado.
+    /// `draws`: 8 u32 por dibujo `[geometria, objeto, material, flags, primer indice, n indices, clave de texturas, 0]`, ya en el orden final de pintado.
     pub fn frame(&mut self, globals: &[f32], objects: &[f32], materials: &[f32], lights: &[f32], draws: &[u32]) {
         if globals.len() < GLOBALS_F {
             return;
@@ -342,6 +532,7 @@ impl Gl {
         }
         for d in draws.chunks_exact(8) {
             self.ensure_pipeline(d[3]);
+            self.ensure_tex_bg(d[6]);
         }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -373,9 +564,14 @@ impl Gl {
                 ..Default::default()
             });
             p.set_bind_group(0, self.bg.as_ref(), &[]);
+            let mut last_key = u32::MAX;
             for (i, d) in draws.chunks_exact(8).enumerate() {
                 let Some(g) = self.geoms.get(&d[0]) else { continue };
                 p.set_pipeline(&self.pipelines[&(d[3] & 31)]);
+                if d[6] != last_key {
+                    p.set_bind_group(1, &self.bgs[&d[6]], &[]);
+                    last_key = d[6];
+                }
                 p.set_vertex_buffer(0, g.vb.slice(..));
                 p.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
                 let (first, n) = (d[4].min(g.n), d[5].min(g.n.saturating_sub(d[4].min(g.n))));

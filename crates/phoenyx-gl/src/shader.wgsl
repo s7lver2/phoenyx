@@ -26,6 +26,10 @@ struct Mat {
     color: vec4<f32>,    // rgb color lineal, a opacidad
     emissive: vec4<f32>, // rgb emisivo * intensidad, a rugosidad
     misc: vec4<f32>,     // x metalicidad, y tipo (0 basic, 1 standard), z niebla (1 si), w vertexColors (1 si)
+    tp: vec4<f32>,       // x alphaTest, yz normalScale, w bumpScale
+    maps: vec4<f32>,     // x mascara de mapas: 1 map, 2 normalMap, 4 roughnessMap, 8 emissiveMap, 16 bumpMap
+    uv: array<vec4<f32>, 10>, // por mapa (mismo orden): (a, b, c, d) y (tx, ty, 0, 0) de la matriz de uv de la textura
+    pad: vec4<f32>,
 };
 
 struct Light {
@@ -40,6 +44,24 @@ struct Light {
 @group(0) @binding(2) var<storage, read> materials: array<Mat>;
 @group(0) @binding(3) var<storage, read> lights: array<Light>;
 @group(0) @binding(4) var<storage, read> draws: array<vec4<u32>>;
+
+@group(1) @binding(0) var tex_map: texture_2d<f32>;
+@group(1) @binding(1) var tex_normal: texture_2d<f32>;
+@group(1) @binding(2) var tex_rough: texture_2d<f32>;
+@group(1) @binding(3) var tex_emis: texture_2d<f32>;
+@group(1) @binding(4) var tex_bump: texture_2d<f32>;
+@group(1) @binding(5) var smp_map: sampler;
+@group(1) @binding(6) var smp_normal: sampler;
+@group(1) @binding(7) var smp_rough: sampler;
+@group(1) @binding(8) var smp_emis: sampler;
+@group(1) @binding(9) var smp_bump: sampler;
+
+/// uv de un mapa: matriz de uv de la textura (texture.matrix) aplicada a las uv interpoladas.
+fn uvT(m: Mat, k: u32, uv: vec2<f32>) -> vec2<f32> {
+    let a = m.uv[k * 2u];
+    let b = m.uv[k * 2u + 1u];
+    return vec2<f32>(a.x * uv.x + a.z * uv.y + b.x, a.y * uv.x + a.w * uv.y + b.y);
+}
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -160,13 +182,29 @@ fn BRDF_Lambert(diffuseColor: vec3<f32>) -> vec3<f32> {
 fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
     let dr = draws[in.di * 2u];
     let m = materials[dr.z];
-    let alpha = m.color.a;
     // derivadas antes de cualquier rama (control uniforme)
     let nUn = normalize(in.vnormal);
     let ddx = dpdx(nUn);
     let ddy = dpdy(nUn);
-    // color_fragment: diffuseColor.rgb *= vColor (vertexColors)
-    let diffuse = select(m.color.rgb, m.color.rgb * in.color, m.misc.w > 0.5);
+    // texturas: todas se muestrean sin ramas (control uniforme); la mascara decide cuales cuentan
+    let maps = u32(m.maps.x);
+    let sMap = textureSample(tex_map, smp_map, uvT(m, 0u, in.uv));
+    let sRough = textureSample(tex_rough, smp_rough, uvT(m, 2u, in.uv));
+    let sEmis = textureSample(tex_emis, smp_emis, uvT(m, 3u, in.uv));
+    // map_fragment: diffuseColor *= sampledDiffuseColor; color_fragment: diffuseColor.rgb *= vColor
+    var diffuse = m.color.rgb;
+    var diffuseA = m.color.a;
+    if ((maps & 1u) != 0u) {
+        diffuse = diffuse * sMap.rgb;
+        diffuseA = diffuseA * sMap.a;
+    }
+    if (m.misc.w > 0.5) {
+        diffuse = diffuse * in.color;
+    }
+    // alphatest_fragment
+    if (m.tp.x > 0.0 && diffuseA < m.tp.x) {
+        discard;
+    }
     var rgb = diffuse;   // MeshBasicMaterial: outgoingLight = diffuse
 
     if (m.misc.y > 0.5) {
@@ -176,7 +214,7 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
             normal = normal * select(-1.0, 1.0, frontFacing);
         }
         let metalnessFactor = m.misc.x;
-        let roughnessFactor = m.emissive.a;
+        let roughnessFactor = m.emissive.a * select(1.0, sRough.g, (maps & 4u) != 0u);
         var material: PhysMat;
         material.diffuseColor = diffuse * (1.0 - metalnessFactor);
         let dxy = max(abs(ddx), abs(ddy));
@@ -219,7 +257,8 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         // RE_IndirectDiffuse_Physical con la luz ambiente
         let indirectDiffuse = g.amb.rgb * BRDF_Lambert(material.diffuseColor);
         let totalDiffuse = directDiffuse + indirectDiffuse;
-        rgb = totalDiffuse + directSpecular + m.emissive.rgb;
+        let emissive = m.emissive.rgb * select(vec3<f32>(1.0), sEmis.rgb, (maps & 8u) != 0u);
+        rgb = totalDiffuse + directSpecular + emissive;
     }
 
     // tonemapping_fragment
@@ -239,5 +278,7 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         }
         rgb = mix(rgb, g.fogc.rgb, f);
     }
-    return vec4<f32>(rgb, alpha);
+    // opaque_fragment: los materiales opacos escriben alfa 1
+    let outA = select(1.0, diffuseA, (dr.w & 4u) != 0u);
+    return vec4<f32>(rgb, outA);
 }

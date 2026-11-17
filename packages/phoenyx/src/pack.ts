@@ -11,7 +11,7 @@ import { BackSide, DoubleSide, FrontSide } from './three/constants.js';
 
 export const GLOBALS_F = 64;
 export const OBJECT_F = 32;
-export const MATERIAL_F = 12;
+export const MATERIAL_F = 64;
 export const LIGHT_F = 16;
 export const MAX_LIGHTS = 64;
 
@@ -57,6 +57,7 @@ const reversePainterSortStable = (a: Item, b: Item) =>
   : a.z !== b.z ? b.z - a.z
   : a.id - b.id;
 
+const IDENT = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 const warned = new Set<string>();
 const warnOnce = (k: string, msg: string) => {
   if (!warned.has(k)) (warned.add(k), console.warn('[phoenyx] ' + msg));
@@ -72,7 +73,7 @@ export class Packer {
   private transparent: Item[] = [];
   private lights: any[] = [];
 
-  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number): Packed {
+  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number): Packed {
     if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
     if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
     this.projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -94,7 +95,25 @@ export class Packer {
         const c = m.color, e = m.emissive;
         const k = m.emissiveIntensity ?? 1;
         const std = m.isMeshStandardMaterial ? 1 : 0;
-        matData.push(c.r, c.g, c.b, m.opacity, e && std ? e.r * k : 0, e && std ? e.g * k : 0, e && std ? e.b * k : 0, std ? m.roughness : 1, std ? m.metalness : 0, std, m.fog === false ? 0 : 1, m.vertexColors ? 1 : 0);
+        const maps = [m.map, std ? m.normalMap : null, std ? m.roughnessMap : null, std ? m.emissiveMap : null, std ? m.bumpMap : null];
+        let mask = 0;
+        const uv: number[] = [];
+        maps.forEach((t, j) => {
+          if (t && t.image) mask |= 1 << j;
+          if (t && t.matrixAutoUpdate === true) t.updateMatrix();
+          const e = t ? t.matrix.elements : IDENT;
+          uv.push(e[0], e[1], e[3], e[4], e[6], e[7], 0, 0);
+        });
+        const ns = m.normalScale;
+        matData.push(
+          c.r, c.g, c.b, m.opacity,
+          e && std ? e.r * k : 0, e && std ? e.g * k : 0, e && std ? e.b * k : 0, std ? m.roughness : 1,
+          std ? m.metalness : 0, std, m.fog === false ? 0 : 1, m.vertexColors ? 1 : 0,
+          m.alphaTest > 0 ? m.alphaTest : 0, ns ? ns.x : 1, ns ? ns.y : 1, m.bumpScale ?? 1,
+          mask, 0, 0, 0,
+          ...uv,
+          0, 0, 0, 0,
+        );
       }
       return i;
     };
@@ -114,6 +133,7 @@ export class Packer {
       objs.set([n[0], n[1], n[2], 0, n[3], n[4], n[5], 0, n[6], n[7], n[8], 0], base + 16);
       const gid = geomId(it.geometry);
       const mi = matIndex(m);
+      const tk = texKey(m);
       // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
       const flip = o.matrixWorld.determinant() < 0;
       const common = (m.transparent ? 4 : 0) | (m.depthWrite !== false && m.depthTest !== false ? 8 : 0) | (m.depthTest !== false ? 16 : 0);
@@ -128,10 +148,10 @@ export class Packer {
         common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
       if (m.transparent && m.side === DoubleSide) {
         // transparente de doble cara: primero las traseras (material BackSide), luego las frontales
-        draws.push(gid, no, mi, bits(true, false, false), first, idx, 0, 0, gid, no, mi, bits(false, false, false), first, idx, 0, 0);
+        draws.push(gid, no, mi, bits(true, false, false), first, idx, tk, 0, gid, no, mi, bits(false, false, false), first, idx, tk, 0);
         triangles += (idx / 3) * 2;
       } else {
-        draws.push(gid, no, mi, bits(m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide), first, idx, 0, 0);
+        draws.push(gid, no, mi, bits(m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide), first, idx, tk, 0);
         triangles += idx / 3;
       }
       no++;

@@ -2,6 +2,7 @@
 // @ts-nocheck (usa el JS de three copiado)
 import init, { create } from '../pkg/phoenyx_gl.js';
 import { Packer } from './pack';
+import { TextureCache } from './textures';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
 import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace } from './three/constants.js';
@@ -27,6 +28,7 @@ export class WebGLRenderer {
   };
 
   private gl: any = null;
+  private textures!: TextureCache;
   private packer = new Packer();
   private pixelRatio = 1;
   private width = 0;
@@ -48,6 +50,7 @@ export class WebGLRenderer {
       const gl = await create(this.domElement);
       if (this.disposed) return;
       this.gl = gl;
+      this.textures = new TextureCache(gl);
     })();
     this.ready.catch((e) => console.error('[phoenyx] no se pudo iniciar la GPU:', e));
   }
@@ -143,13 +146,14 @@ export class WebGLRenderer {
     const alpha = scene.background && scene.background.isColor ? 1 : this.clearAlpha;
     const tm = this.toneMapping === ACESFilmicToneMapping ? 1 : 0;
     if (this.toneMapping !== NoToneMapping && !tm) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
-    const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: this.outputColorSpace }, (g) => this.geomId(g));
+    const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: this.outputColorSpace }, (g) => this.geomId(g), (m) => this.textures.materialKey(m));
     this.gl.frame(p.globals, p.objects, p.materials, p.lights, p.draws);
     const err = this.gl.take_error();
     if (err) console.error('[phoenyx] GPU:', err);
     this.info.render.calls += p.nDraws;
     this.info.render.triangles += p.triangles;
     this.info.render.frame++;
+    this.info.memory.textures = this.textures.count;
   }
 
   dispose() {
