@@ -48,3 +48,7 @@ Los contadores de `modelos` difieren (three 62 llamadas / 60350 triángulos, Pho
 - Sin `shadowMap`, `setAnimationLoop`, `setRenderTarget`, `getDrawingBufferSize`, `getContext`, `forceContextLoss`, ni recuperación de pérdida de GPU / respaldo sin WebGPU.
 - Asignaciones por fotograma en `pack.ts` (fase 8); la reserva de instancias no se libera al crecer.
 - Aviso de Chrome sobre timestamp-writes sin resolver.
+
+## Revisión final (Sonnet) y correcciones
+Corregido: geometría sin `position` o vacía (se omite), materiales sin `color` (aviso y se omiten), imagen con CORS que no se puede leer (aviso, no cae el fotograma), texturas mayores de 8192 (se reducen), bit de mapa solo con imagen cargada, `dispose` repetido (un solo descuento), versión de atributos interleaved, colores de instancia con menos elementos que `count`, `forceSinglePass`.
+Aplazado: RGB perdido bajo alfa bajo (el canvas 2D premultiplica; decodificar con `createImageBitmap({premultiplyAlpha:'none'})`, fase 8); `DataTexture` float / half-float / 1 canal (se avisa, resultado no fiable); `ImageBitmap` con `flipY` (three lo ignora).

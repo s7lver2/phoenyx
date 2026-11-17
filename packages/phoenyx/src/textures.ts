@@ -2,6 +2,8 @@
 // @ts-nocheck (usa el JS de three copiado)
 import { SRGBColorSpace, RepeatWrapping, ClampToEdgeWrapping, MirroredRepeatWrapping, NearestFilter, LinearFilter, NearestMipmapNearestFilter, NearestMipmapLinearFilter, LinearMipmapNearestFilter, LinearMipmapLinearFilter } from './three/constants.js';
 
+/** Lado maximo de textura del dispositivo por defecto en WebGPU (max_texture_dimension_2d). */
+const MAX_TEX = 8192;
 const warned = new Set<string>();
 const warnOnce = (k: string, msg: string) => {
   if (!warned.has(k)) (warned.add(k), console.warn('[phoenyx] ' + msg));
@@ -46,15 +48,24 @@ export class TextureCache {
     }
     const w = img.naturalWidth || img.videoWidth || img.width, h = img.naturalHeight || img.videoHeight || img.height;
     if (!w || !h || (img.complete === false)) return null;
+    // como three (resizeImage): una imagen mayor que el limite de la GPU se reduce
+    const k = Math.min(1, MAX_TEX / Math.max(w, h));
+    const cw = Math.max(1, Math.floor(w * k)), ch = Math.max(1, Math.floor(h * k));
     const cv = (this.scratch ??= document.createElement('canvas'));
-    cv.width = w;
-    cv.height = h;
+    cv.width = cw;
+    cv.height = ch;
     const ctx = cv.getContext('2d', { willReadFrequently: true });
-    ctx.clearRect(0, 0, w, h);
-    ctx.drawImage(img, 0, 0, w, h);
-    const px = ctx.getImageData(0, 0, w, h).data;
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(img, 0, 0, cw, ch);
+    let px: Uint8ClampedArray;
+    try {
+      px = ctx.getImageData(0, 0, cw, ch).data;
+    } catch (e) {
+      warnOnce('tainted', 'imagen de otro origen sin CORS: no se puede leer y no se dibuja');
+      return null;
+    }
     const rgba = new Uint8Array(px.buffer, px.byteOffset, px.length);
-    return { w, h, data: tex.flipY ? flipRows(rgba, w, h) : rgba };
+    return { w: cw, h: ch, data: tex.flipY ? flipRows(rgba, cw, ch) : rgba };
   }
 
   /** Id de la textura en la GPU (0 si no esta lista); la sube de nuevo si cambio su `version`. */
@@ -70,6 +81,7 @@ export class TextureCache {
       this.ids.set(tex, r);
       this.count++;
       tex.addEventListener('dispose', () => {
+        if (this.ids.get(tex) !== r) return;
         this.gl.drop_texture(r.id);
         this.ids.delete(tex);
         this.count--;

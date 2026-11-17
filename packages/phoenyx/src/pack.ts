@@ -59,6 +59,8 @@ const reversePainterSortStable = (a: Item, b: Item) =>
 
 const IDENT = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 const warned = new Set<string>();
+/** La imagen ya esta cargada (three muestra negro hasta entonces; aqui el bit de mapa solo se activa cuando se puede subir). */
+const textureReady = (t: any) => { const i = t.image; return !!i && (!!i.data || (i.complete !== false && !!(i.naturalWidth || i.videoWidth || i.width))); };
 const warnOnce = (k: string, msg: string) => {
   if (!warned.has(k)) (warned.add(k), console.warn('[phoenyx] ' + msg));
 };
@@ -99,7 +101,7 @@ export class Packer {
         let mask = 0;
         const uv: number[] = [];
         maps.forEach((t, j) => {
-          if (t && t.image) mask |= 1 << j;
+          if (t && t.image && textureReady(t)) mask |= 1 << j;
           if (t && t.matrixAutoUpdate === true) t.updateMatrix();
           const e = t ? t.matrix.elements : IDENT;
           uv.push(e[0], e[1], e[3], e[4], e[6], e[7], 0, 0);
@@ -127,6 +129,10 @@ export class Packer {
     let no = 0;
     for (const it of list) {
       const o = it.object, m = it.material;
+      // como renderBufferDirect: sin posicion no se dibuja; materiales sin color (Shader, Depth, Normal...) aun no se soportan
+      const gp = it.geometry.attributes.position;
+      if (!gp || gp.count === 0) continue;
+      if (!m.color) { warnOnce(m.type, `${m.type} aun no esta soportado y se omite`); continue; }
       this.mv.multiplyMatrices(camera.matrixWorldInverse, o.matrixWorld);
       this.nm.getNormalMatrix(this.mv);
       const base = no * OBJECT_F;
@@ -134,8 +140,8 @@ export class Packer {
       const n = this.nm.elements;
       objs.set([n[0], n[1], n[2], 0, n[3], n[4], n[5], 0, n[6], n[7], n[8], 0], base + 16);
       const gid = geomId(it.geometry);
-      const mi = matIndex(m);
       const tk = texKey(m);
+      const mi = matIndex(m);
       const ii = o.isInstancedMesh ? instInfo(o) : null;
       if (o.isInstancedMesh && (!ii || ii.count === 0)) continue;
       // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
@@ -163,7 +169,7 @@ export class Packer {
           }
         }
       };
-      if (m.transparent && m.side === DoubleSide) {
+      if (m.transparent && m.side === DoubleSide && !m.forceSinglePass) {
         // transparente de doble cara: primero las traseras (material BackSide), luego las frontales
         emit(bits(true, false, false));
         emit(bits(false, false, false));

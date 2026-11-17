@@ -106,9 +106,9 @@ export class WebGLRenderer {
         });
       }
       rec.key = key;
-      this.gl.set_instances(rec.id, im.array.subarray(0, count * 16), ic ? ic.array.subarray(0, count * 3) : new Float32Array(0));
+      this.gl.set_instances(rec.id, im.array.subarray(0, count * 16), ic && ic.count >= count ? ic.array.subarray(0, count * 3) : new Float32Array(0));
     }
-    return { id: rec.id, count, color: !!ic };
+    return { id: rec.id, count, color: !!ic && ic.count >= count };
   }
 
   /** Normales de una geometria que no las trae (sin tocar la geometria del juego). */
@@ -127,7 +127,7 @@ export class WebGLRenderer {
       if (!a) return 0;
       let i = this.attrIds.get(a);
       if (!i) this.attrIds.set(a, (i = this.nextAttr++));
-      return `${i}.${a.version}.${a.count}`;
+      return `${i}.${(a.data ?? a).version}.${a.count}`;
     };
     const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(col)}:${aid(g.index)}`;
     let rec = this.ids.get(g);
@@ -152,6 +152,7 @@ export class WebGLRenderer {
       this.ids.set(g, r);
       this.info.memory.geometries++;
       g.addEventListener('dispose', () => {
+        if (this.ids.get(g) !== r) return;
         this.gl?.drop_geometry(r.id);
         this.ids.delete(g);
         this.info.memory.geometries--;
