@@ -1,0 +1,51 @@
+{
+  "url": "http://localhost:5190",
+  "preset": "low",
+  "throttle": 1,
+  "perf": {
+    "level0-inicio": {
+      "drawCalls": 51,
+      "triangles": 159723,
+      "geometries": 52,
+      "textures": 166,
+      "frameMsMedian": 3.7,
+      "frameMsP95": 5.6,
+      "cpuMsRender": 2.4,
+      "resScale": 1,
+      "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5"
+    },
+    "level0-semilla7": {
+      "drawCalls": 123,
+      "triangles": 273193,
+      "geometries": 110,
+      "textures": 175,
+      "frameMsMedian": 5.7,
+      "frameMsP95": 7.1,
+      "cpuMsRender": 3.5,
+      "resScale": 1,
+      "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5"
+    },
+    "poolrooms": {
+      "drawCalls": 67,
+      "triangles": 1652,
+      "geometries": 48,
+      "textures": 156,
+      "frameMsMedian": 1.6,
+      "frameMsP95": 2.5,
+      "cpuMsRender": 1,
+      "resScale": 1,
+      "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5"
+    },
+    "suites": {
+      "drawCalls": 300,
+      "triangles": 444510,
+      "geometries": 220,
+      "textures": 225,
+      "frameMsMedian": 7.4,
+      "frameMsP95": 12,
+      "cpuMsRender": 4.5,
+      "resScale": 1,
+      "gpu": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5"
+    }
+  }
+}

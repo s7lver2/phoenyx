@@ -7,3 +7,5 @@ web/pkg-ai/
 .superpowers/
 tools/fidelity/node_modules/
 fidelity/out/
+fidelity/baseline/*/*.png
+fidelity/baseline/*/*-diff.png
