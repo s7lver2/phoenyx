@@ -33,6 +33,7 @@ const browser = await chromium.launch({
 const perf = {};
 let failed = 0;
 for (const s of scenes) {
+  for (const f of [`${s.id}.png`, `${s.id}-error.png`]) fs.rmSync(path.join(out, f), { force: true }); // sin restos de ejecuciones anteriores
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   try {

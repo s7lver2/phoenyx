@@ -26,6 +26,8 @@ const ids = fs
   .readdirSync(A)
   .filter((f) => f.endsWith('.png') && !f.endsWith('-error.png'))
   .map((f) => f.slice(0, -4));
+if (!ids.length) { console.error('no hay capturas en ' + A); process.exit(2); }
+for (const f of fs.readdirSync(B)) if (f.endsWith('.png') && !f.endsWith('-error.png') && !ids.includes(f.slice(0, -4))) console.error('AVISO: ' + f + ' esta en B y no en A: se ignora');
 const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
 
 /** Marca como borde los pixeles con gradiente fuerte y los 2 vecinos de cada lado. */
