@@ -12,6 +12,7 @@ import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { makePrueba } from './games/prueba.js';
+import { FilmShader, VhsShader } from './games/vhsPass.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
@@ -582,6 +583,32 @@ if ((sceneId.startsWith('ao') && sceneId !== 'ao-normales') || sceneId.startsWit
     composer.addPass(new OutputPass());
     composer.addPass(new SMAAPass(1280, 720));
   } else composer.addPass(new OutputPass());
+  draw = () => composer.render(0);
+}
+
+// ---- escena 'sh-vhs': RenderPass -> OutputPass -> FilmShader -> VhsShader del juego, con el tiempo fijo ----
+if (sceneId === 'sh-vhs') {
+  const corrupt = Number(q.get('corrupt') ?? 0);
+  const composer = new EffectComposer(renderer);
+  composer.setPixelRatio(1);
+  composer.setSize(1280, 720);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new OutputPass());
+  const film = new ShaderPass(FilmShader);
+  Object.assign(film.uniforms, { uTime: { value: 1.7 }, uRes: { value: new THREE.Vector2(1280, 720) }, uMove: { value: 1 }, uMad: { value: 0.35 }, uVhs: { value: 1 }, uWarm: { value: 0.6 } });
+  composer.addPass(film);
+  // tPrev: un fotograma viejo cualquiera (aqui, un dibujo de rayas) para los trozos congelados
+  const prev = new THREE.CanvasTexture((() => {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 36;
+    const g = c.getContext('2d');
+    for (let x = 0; x < 64; x += 8) { g.fillStyle = x % 16 ? '#c0c060' : '#303090'; g.fillRect(x, 0, 8, 36); }
+    return c;
+  })());
+  prev.colorSpace = THREE.SRGBColorSpace;
+  const vhs = new ShaderPass(VhsShader);
+  Object.assign(vhs.uniforms, { tPrev: { value: prev }, uTime: { value: 2.3 }, uRes: { value: new THREE.Vector2(1280, 720) }, uMove: { value: 1 }, uLow: { value: 0 }, uCorrupt: { value: corrupt }, uFlash: { value: 0.05 }, uBlack: { value: 0 }, uAspect: { value: 16 / 9 }, uAmount: { value: 1 }, uPool: { value: 0.5 } });
+  composer.addPass(vhs);
   draw = () => composer.render(0);
 }
 

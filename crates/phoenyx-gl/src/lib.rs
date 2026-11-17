@@ -1065,6 +1065,8 @@ impl Gl {
             9 => "fs_denoise",
             10 => "fs_aoblend",
             11 => "fs_aodepth",
+            12 => "fs_film",
+            13 => "fs_vhs",
             _ => return false,
         };
         let mut bl = [0u32; 7];

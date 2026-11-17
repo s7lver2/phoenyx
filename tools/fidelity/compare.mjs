@@ -16,6 +16,9 @@ const B = path.resolve(arg('b', ''));
 const OUT = path.resolve(arg('out', '../../fidelity/out/diff'));
 const MEAN_MAX = Number(arg('mean', '1'));
 const PIXEL_MAX = Number(arg('pixel', '8'));
+// --box N: compara las medias de bloques de N x N (para shaders con ruido por pixel, cuyo hash sale distinto en cada compilador: el grano no se puede igualar bit a bit)
+const BOX = Number(arg('box', '0'));
+const ONLY = arg('only', '').split(',').filter(Boolean);
 if (!arg('a', '') || !arg('b', '')) {
   console.error('uso: node compare.mjs --a <carpeta> --b <carpeta> [--out <carpeta>]');
   process.exit(2);
@@ -25,7 +28,19 @@ fs.mkdirSync(OUT, { recursive: true });
 const ids = fs
   .readdirSync(A)
   .filter((f) => f.endsWith('.png') && !f.endsWith('-error.png'))
-  .map((f) => f.slice(0, -4));
+  .map((f) => f.slice(0, -4))
+  .filter((id) => !ONLY.length || ONLY.includes(id));
+/** Sustituye cada bloque de N x N por su media (en sitio). */
+function boxAvg(img, N) {
+  const { width: w, height: h, data: d } = img;
+  for (let by = 0; by < h; by += N)
+    for (let bx = 0; bx < w; bx += N) {
+      const s = [0, 0, 0, 0];
+      let c = 0;
+      for (let y = by; y < Math.min(h, by + N); y++) for (let x = bx; x < Math.min(w, bx + N); x++) { const i = (y * w + x) * 4; for (let k = 0; k < 4; k++) s[k] += d[i + k]; c++; }
+      for (let y = by; y < Math.min(h, by + N); y++) for (let x = bx; x < Math.min(w, bx + N); x++) { const i = (y * w + x) * 4; for (let k = 0; k < 4; k++) d[i + k] = Math.round(s[k] / c); }
+    }
+}
 if (!ids.length) { console.error('no hay capturas en ' + A); process.exit(2); }
 for (const f of fs.readdirSync(B)) if (f.endsWith('.png') && !f.endsWith('-error.png') && !ids.includes(f.slice(0, -4))) console.error('AVISO: ' + f + ' esta en B y no en A: se ignora');
 const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
@@ -71,6 +86,7 @@ for (const id of ids) {
     failed++;
     continue;
   }
+  if (BOX > 1) (boxAvg(a, BOX), boxAvg(b, BOX));
   const n = a.width * a.height;
   const mask = edgeMask(a);
   const err = new Uint8Array(n);

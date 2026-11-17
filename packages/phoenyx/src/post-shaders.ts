@@ -9,6 +9,7 @@ import { Vector2 } from 'three';
 import { GTAOShader, GTAODepthShader, GTAOBlendShader } from './jsm/shaders/GTAOShader.js';
 import { PoissonDenoiseShader } from './jsm/shaders/PoissonDenoiseShader.js';
 import { registerPassShader } from './passes';
+import './user-shaders/vhs';
 
 // id 0: fs_copy
 registerPassShader(CopyShader.fragmentShader, { id: 0, tex: ['tDiffuse'], pack: (m) => [m.uniforms.opacity.value] });

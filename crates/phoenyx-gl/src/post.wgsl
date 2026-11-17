@@ -632,3 +632,117 @@ fn fs_aoblend(in: VOut) -> @location(0) vec4<f32> {
     let texel = textureSample(t0, sl, in.vuv);
     return vec4<f32>(mix(vec3<f32>(1.0), texel.rgb, u[0].x), texel.a);
 }
+
+// ---- FilmShader del juego (client/src/game/vhsPass.ts) ----
+// u[0] = (uTime, uMove, uMad, uVhs); u[1] = (uWarm, uRes.x, uRes.y, 0). t0 = tDiffuse
+fn hash2(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+}
+
+@fragment
+fn fs_film(in: VOut) -> @location(0) vec4<f32> {
+    let uTime = u[0].x;
+    let uMove = u[0].y;
+    let uMad = u[0].z;
+    let uVhs = u[0].w;
+    let uWarm = u[1].x;
+    let uRes = u[1].yz;
+    let vUv = in.vuv;
+    let mad = uMad * uMad;
+    let uv = vUv + mad * uMove * 0.006 * vec2<f32>(sin(vUv.y * 9.0 + uTime * 1.7), cos(vUv.x * 7.0 + uTime * 1.3));
+    let c = uv - 0.5;
+    let r = dot(c, c);
+    let off = c * r * (0.007 + 0.06 * mad);
+    let sh = vec2<f32>(uVhs * 1.6 / uRes.x, 0.0);
+    var col = vec3<f32>(textureSample(t0, sl, uv + off + sh).r, textureSample(t0, sl, uv).g, textureSample(t0, sl, uv - off - sh).b);
+    let l = dot(col, vec3<f32>(0.3, 0.59, 0.11));
+    col = mix(col, vec3<f32>(l), mad * 0.6);
+    let g = hash2(floor(vUv * uRes) + floor(uTime * 24.0) * uMove * 13.7) - 0.5;
+    col += g * (0.07 + 0.08 * mad + 0.05 * uVhs) * (1.0 - 0.5 * l);
+    col *= 1.0 - r * (1.15 + 1.6 * mad + 0.6 * uWarm);
+    let lw = dot(col, vec3<f32>(0.3, 0.59, 0.11));
+    col = mix(col, col * vec3<f32>(1.07, 0.97, 0.83), uWarm);
+    col += uWarm * vec3<f32>(0.05, 0.02, 0.0) * smoothstep(0.5, 1.0, lw);
+    col = mix(col, smoothstep(vec3<f32>(0.0), vec3<f32>(1.0), col) * 1.04, uWarm * 0.45);
+    return vec4<f32>(col, 1.0);
+}
+
+// ---- VhsShader del juego (client/src/game/vhsPass.ts) ----
+// u[0] = (uTime, uMove, uLow, uCorrupt); u[1] = (uFlash, uBlack, uAspect, uAmount); u[2] = (uPool, uRes.x, uRes.y, 0).
+// t0 = tDiffuse, t1 = tPrev
+@fragment
+fn fs_vhs(in: VOut) -> @location(0) vec4<f32> {
+    let uTime = u[0].x;
+    let uMove = u[0].y;
+    let uLow = u[0].z;
+    let uCorrupt = u[0].w;
+    let uFlash = u[1].x;
+    let uBlack = u[1].y;
+    let uAspect = u[1].z;
+    let uAmount = u[1].w;
+    let uPool = u[2].x;
+    let uRes = u[2].yz;
+    let vUv = in.vuv;
+    var uv = vUv;
+    // la curva del tubo, leve
+    if (uLow < 0.5) { let c = uv - 0.5; uv = 0.5 + c * (1.0 + 0.05 * dot(c, c)); }
+    let t = floor(uTime * 30.0) * uMove;
+    let row = floor(uv.y * uRes.y / 2.0);
+    // la banda de tracking sube despacio y a ratos desaparece; dentro, las filas tiemblan
+    let bandOn = step(0.25, fract(uTime * 0.07)) * uMove;
+    let bandY = fract(uTime * 0.11);
+    let band = (1.0 - smoothstep(0.0, 0.08, abs(uv.y - bandY))) * bandOn;
+    uv.x += band * (hash2(vec2<f32>(row, t)) - 0.5) * 0.035;
+    uv.x += (hash2(vec2<f32>(row, t + 7.0)) - 0.5) * 0.003 * uMove;
+    // el cambio de cabezal
+    let head = (1.0 - smoothstep(0.0, 0.07, uv.y));
+    uv.x += head * (0.04 + 0.03 * hash2(vec2<f32>(row, t))) * (0.5 + 0.5 * uMove);
+    // al corromperse
+    let k = uCorrupt * uCorrupt;
+    let tick = floor(uTime * (6.0 + 18.0 * uCorrupt));
+    uv.x += k * (hash2(vec2<f32>(floor(uv.y * 40.0), tick)) - 0.5) * 0.25 * step(0.5, hash2(vec2<f32>(floor(uv.y * 12.0), tick + 3.0)));
+    let blk = floor(uv * vec2<f32>(16.0, 9.0));
+    uv += k * (vec2<f32>(hash2(blk + tick), hash2(blk - tick)) - 0.5) * 0.08 * step(0.85, hash2(blk + tick * 1.3));
+    // la cinta es blanda
+    var col: vec3<f32>;
+    if (uLow > 0.5) {
+        col = textureSample(t0, sl, uv).rgb;
+    } else {
+        let o = 1.0 / uRes.x;
+        var soft = vec3<f32>(0.0);
+        var chroma = vec3<f32>(0.0);
+        for (var i = -3; i <= 3; i++) { soft += textureSample(t0, sl, uv + vec2<f32>(f32(i) * o * 2.5, 0.0)).rgb; }
+        for (var i = -4; i <= 4; i++) { chroma += textureSample(t0, sl, uv + vec2<f32>((f32(i) * 4.0 - 6.0) * o, 0.0)).rgb; }
+        soft /= 7.0;
+        chroma /= 9.0;
+        col = mix(textureSample(t0, sl, uv).rgb, soft, 0.75);
+        let l = dot(col, vec3<f32>(0.3, 0.59, 0.11));
+        col = vec3<f32>(l) + (chroma - dot(chroma, vec3<f32>(0.3, 0.59, 0.11))) * (0.95 + 0.5 * uPool);
+        col += max(soft - 0.55, vec3<f32>(0.0)) * 0.7;
+    }
+    // trozos congelados de un fotograma viejo
+    col = mix(col, textureSample(t1, sl, uv).rgb, step(0.8, hash2(blk * 1.7 + floor(tick / 3.0))) * k);
+    // blancos quemados y negros levantados
+    let l = dot(col, vec3<f32>(0.3, 0.59, 0.11));
+    col = mix(vec3<f32>(l), col, 0.72);
+    col = col + smoothstep(0.75, 1.0, l) * 0.12;
+    col = col * 0.9 + mix(vec3<f32>(0.05, 0.05, 0.02), vec3<f32>(0.03, 0.04, 0.05), uPool);
+    col *= mix(vec3<f32>(1.0, 1.03, 0.84), vec3<f32>(0.97, 1.0, 1.03), uPool);
+    // estatica
+    let g = hash2(floor(vUv * uRes / 1.5) + t * 1.31);
+    col += (g - 0.5) * (0.11 + band * 0.3 + head * 0.5);
+    col += step(0.9985, hash2(vec2<f32>(row, t * 0.7))) * step(0.6, hash2(vec2<f32>(floor(vUv.x * 7.0), t + row))) * 0.45 * uMove;
+    col = mix(col, vec3<f32>(g), smoothstep(0.55, 1.0, uCorrupt) * 0.9);
+    // lineas de barrido, la banda mas clara y el vigneteado
+    col *= 0.94 + 0.06 * (1.0 - uPool) * sin(vUv.y * uRes.y * 1.5);
+    col += band * 0.06;
+    let v = vUv - 0.5;
+    col *= 1.0 - dot(v, v) * 0.9;
+    // fuera de la curva, negro
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { col = vec3<f32>(0.0); }
+    if (abs(vUv.x - 0.5) > 0.5 * min(1.0, (4.0 / 3.0) / uAspect)) { col = vec3<f32>(0.0); }
+    col = mix(textureSample(t0, sl, vUv).rgb, col, max(uAmount, max(uCorrupt, uBlack)));
+    col = mix(col, vec3<f32>(1.0), uFlash);
+    col *= 1.0 - uBlack;
+    return vec4<f32>(col, 1.0);
+}
