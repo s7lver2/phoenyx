@@ -23,6 +23,7 @@ interface Item {
   renderOrder: number;
   z: number;
   id: number;
+  group: { start: number; count: number } | null;
 }
 
 export interface Packed {
@@ -93,7 +94,7 @@ export class Packer {
         const c = m.color, e = m.emissive;
         const k = m.emissiveIntensity ?? 1;
         const std = m.isMeshStandardMaterial ? 1 : 0;
-        matData.push(c.r, c.g, c.b, m.opacity, e && std ? e.r * k : 0, e && std ? e.g * k : 0, e && std ? e.b * k : 0, std ? m.roughness : 1, std ? m.metalness : 0, std, m.fog === false ? 0 : 1, 0);
+        matData.push(c.r, c.g, c.b, m.opacity, e && std ? e.r * k : 0, e && std ? e.g * k : 0, e && std ? e.b * k : 0, std ? m.roughness : 1, std ? m.metalness : 0, std, m.fog === false ? 0 : 1, m.vertexColors ? 1 : 0);
       }
       return i;
     };
@@ -105,7 +106,6 @@ export class Packer {
     let no = 0;
     for (const it of list) {
       const o = it.object, m = it.material;
-      if (m.visible === false) continue;
       this.mv.multiplyMatrices(camera.matrixWorldInverse, o.matrixWorld);
       this.nm.getNormalMatrix(this.mv);
       const base = no * OBJECT_F;
@@ -117,15 +117,21 @@ export class Packer {
       // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
       const flip = o.matrixWorld.determinant() < 0;
       const common = (m.transparent ? 4 : 0) | (m.depthWrite !== false && m.depthTest !== false ? 8 : 0) | (m.depthTest !== false ? 16 : 0);
-      const idx = it.geometry.index ? it.geometry.index.count : it.geometry.attributes.position.count;
+      // rango de dibujo: drawRange y grupo, como WebGLRenderer.renderBufferDirect
+      const geo = it.geometry;
+      const dataCount = geo.index ? geo.index.count : geo.attributes.position.count;
+      const gs = it.group ? it.group.start : 0, gc = it.group ? it.group.count : Infinity;
+      const first = Math.max(geo.drawRange.start, gs);
+      const idx = Math.max(0, Math.min(dataCount, geo.drawRange.start + geo.drawRange.count, gs + gc) - first);
+      if (idx === 0) continue;
       const bits = (backSide: boolean, double: boolean, normalDouble: boolean) =>
         common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
       if (m.transparent && m.side === DoubleSide) {
         // transparente de doble cara: primero las traseras (material BackSide), luego las frontales
-        draws.push(gid, no, mi, bits(true, false, false), gid, no, mi, bits(false, false, false));
+        draws.push(gid, no, mi, bits(true, false, false), first, idx, 0, 0, gid, no, mi, bits(false, false, false), first, idx, 0, 0);
         triangles += (idx / 3) * 2;
       } else {
-        draws.push(gid, no, mi, bits(m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide));
+        draws.push(gid, no, mi, bits(m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide), first, idx, 0, 0);
         triangles += idx / 3;
       }
       no++;
@@ -195,7 +201,7 @@ export class Packer {
       materials: new Float32Array(matData),
       lights: new Float32Array(lightData),
       draws: new Uint32Array(draws),
-      nDraws: draws.length / 4,
+      nDraws: draws.length / 8,
       triangles,
     };
   }
@@ -211,23 +217,25 @@ export class Packer {
       else if (object.isMesh) {
         if (object.isSkinnedMesh || object.isInstancedMesh) warnOnce(object.type, `${object.type} aun no esta soportado y se dibuja como Mesh`);
         if (!object.frustumCulled || this.frustum.intersectsObject(object)) {
-          const material = object.material;
-          if (Array.isArray(material)) warnOnce('multimat', 'materiales multiples aun no estan soportados: se usa el primero');
-          const mat = Array.isArray(material) ? material[0] : material;
-          if (mat && mat.visible !== false) {
-            // z de ordenacion: centro de la esfera envolvente, como WebGLRenderer.projectObject
-            const geo = object.geometry;
-            if (object.boundingSphere !== undefined) {
-              if (object.boundingSphere === null) object.computeBoundingSphere();
-              this.v.copy(object.boundingSphere.center);
-            } else {
-              if (geo.boundingSphere === null) geo.computeBoundingSphere();
-              this.v.copy(geo.boundingSphere.center);
-            }
-            this.v.applyMatrix4(object.matrixWorld).applyMatrix4(this.projScreen);
-            const item: Item = { object, geometry: object.geometry, material: mat, groupOrder, renderOrder: object.renderOrder, z: this.v.z, id: object.id };
-            (mat.transparent ? this.transparent : this.opaque).push(item);
+          // z de ordenacion: centro de la esfera envolvente, como WebGLRenderer.projectObject
+          const geo = object.geometry;
+          if (object.boundingSphere !== undefined) {
+            if (object.boundingSphere === null) object.computeBoundingSphere();
+            this.v.copy(object.boundingSphere.center);
+          } else {
+            if (geo.boundingSphere === null) geo.computeBoundingSphere();
+            this.v.copy(geo.boundingSphere.center);
           }
+          this.v.applyMatrix4(object.matrixWorld).applyMatrix4(this.projScreen);
+          const z = this.v.z;
+          const push = (mat: any, group: any) => {
+            if (!mat || mat.visible === false) return;
+            const item: Item = { object, geometry: geo, material: mat, groupOrder, renderOrder: object.renderOrder, z, id: object.id, group };
+            (mat.transparent ? this.transparent : this.opaque).push(item);
+          };
+          if (Array.isArray(object.material)) {
+            for (const group of geo.groups) push(object.material[group.materialIndex], group);
+          } else push(object.material, null);
         }
       } else if (object.isPoints || object.isLine || object.isSprite) warnOnce(object.type, `${object.type} aun no esta soportado y se omite`);
     }

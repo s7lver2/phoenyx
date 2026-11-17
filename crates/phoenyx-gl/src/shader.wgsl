@@ -25,7 +25,7 @@ struct Obj {
 struct Mat {
     color: vec4<f32>,    // rgb color lineal, a opacidad
     emissive: vec4<f32>, // rgb emisivo * intensidad, a rugosidad
-    misc: vec4<f32>,     // x metalicidad, y tipo (0 basic, 1 standard), z niebla (1 si), w sin uso
+    misc: vec4<f32>,     // x metalicidad, y tipo (0 basic, 1 standard), z niebla (1 si), w vertexColors (1 si)
 };
 
 struct Light {
@@ -47,11 +47,12 @@ struct VOut {
     @location(1) vnormal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) @interpolate(flat) di: u32,
+    @location(4) color: vec3<f32>,
 };
 
 @vertex
-fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @builtin(instance_index) ii: u32) -> VOut {
-    let d = draws[ii];
+fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec3<f32>, @builtin(instance_index) ii: u32) -> VOut {
+    let d = draws[ii * 2u];
     let o = objects[d.y];
     let mv = g.view * o.model;
     let vp = mv * vec4<f32>(position, 1.0);
@@ -66,6 +67,7 @@ fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @locatio
     out.vnormal = mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * normal * flip;
     out.uv = uv;
     out.di = ii;
+    out.color = color;
     return out;
 }
 
@@ -156,14 +158,16 @@ fn BRDF_Lambert(diffuseColor: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
-    let dr = draws[in.di];
+    let dr = draws[in.di * 2u];
     let m = materials[dr.z];
     let alpha = m.color.a;
     // derivadas antes de cualquier rama (control uniforme)
     let nUn = normalize(in.vnormal);
     let ddx = dpdx(nUn);
     let ddy = dpdy(nUn);
-    var rgb = m.color.rgb;   // MeshBasicMaterial: outgoingLight = diffuse
+    // color_fragment: diffuseColor.rgb *= vColor (vertexColors)
+    let diffuse = select(m.color.rgb, m.color.rgb * in.color, m.misc.w > 0.5);
+    var rgb = diffuse;   // MeshBasicMaterial: outgoingLight = diffuse
 
     if (m.misc.y > 0.5) {
         // ---- MeshStandardMaterial: meshphysical.glsl.js sin sheen, clearcoat, iridiscencia ni transmision ----
@@ -174,13 +178,13 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         let metalnessFactor = m.misc.x;
         let roughnessFactor = m.emissive.a;
         var material: PhysMat;
-        material.diffuseColor = m.color.rgb * (1.0 - metalnessFactor);
+        material.diffuseColor = diffuse * (1.0 - metalnessFactor);
         let dxy = max(abs(ddx), abs(ddy));
         let geometryRoughness = max(max(dxy.x, dxy.y), dxy.z);
         material.roughness = max(roughnessFactor, 0.0525);
         material.roughness += geometryRoughness;
         material.roughness = min(material.roughness, 1.0);
-        material.specularColor = mix(vec3<f32>(0.04), m.color.rgb, metalnessFactor);
+        material.specularColor = mix(vec3<f32>(0.04), diffuse, metalnessFactor);
         material.specularF90 = 1.0;
 
         // lights_fragment_begin

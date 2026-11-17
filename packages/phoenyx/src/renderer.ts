@@ -3,6 +3,7 @@
 import init, { create } from '../pkg/phoenyx_gl.js';
 import { Packer } from './pack';
 import { Color } from './three/math/Color.js';
+import { BufferGeometry } from './three/core/BufferGeometry.js';
 import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace } from './three/constants.js';
 
 /** Si el anfitrion no sirve el wasm junto al modulo, define `globalThis.PHOENYX_WASM_URL` antes de crear el renderer. */
@@ -76,16 +77,25 @@ export class WebGLRenderer {
     this.clearAlpha = alpha;
   }
 
+  /** Normales de una geometria que no las trae (sin tocar la geometria del juego). */
+  private normalsOf(g: any): Float32Array {
+    const t = new BufferGeometry();
+    t.setAttribute('position', g.attributes.position);
+    if (g.index) t.setIndex(g.index);
+    t.computeVertexNormals();
+    return t.attributes.normal.array as Float32Array;
+  }
+
   /** Sube la geometria a la GPU si es nueva o cambio (version de sus atributos) y devuelve su id. */
   private geomId(g: any): number {
-    const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv;
+    const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv, col = g.attributes.color;
     const aid = (a: any) => {
       if (!a) return 0;
       let i = this.attrIds.get(a);
       if (!i) this.attrIds.set(a, (i = this.nextAttr++));
       return `${i}.${a.version}.${a.count}`;
     };
-    const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(g.index)}`;
+    const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(col)}:${aid(g.index)}`;
     let rec = this.ids.get(g);
     if (rec && rec.key === key) return rec.id;
     const f32 = (a: any, n: number) => {
@@ -114,7 +124,7 @@ export class WebGLRenderer {
       });
     }
     rec.key = key;
-    this.gl.set_geometry(rec.id, f32(pos, 3), f32(nor, 3), f32(uv, 2), index);
+    this.gl.set_geometry(rec.id, f32(pos, 3), nor ? f32(nor, 3) : this.normalsOf(g), f32(uv, 2), f32(g.attributes.color, 3), index);
     return rec.id;
   }
 

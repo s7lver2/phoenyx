@@ -197,9 +197,9 @@ impl Gl {
     }
 
     /// Crea o reemplaza una geometria: posiciones y normales de 3 floats, uvs de 2 (puede venir vacio) e indices u32.
-    pub fn set_geometry(&mut self, id: u32, positions: &[f32], normals: &[f32], uvs: &[f32], indices: &[u32]) {
+    pub fn set_geometry(&mut self, id: u32, positions: &[f32], normals: &[f32], uvs: &[f32], colors: &[f32], indices: &[u32]) {
         let n = positions.len() / 3;
-        let mut v: Vec<f32> = Vec::with_capacity(n * 8);
+        let mut v: Vec<f32> = Vec::with_capacity(n * 11);
         for i in 0..n {
             v.extend_from_slice(&positions[i * 3..i * 3 + 3]);
             if normals.len() >= (i + 1) * 3 {
@@ -211,6 +211,11 @@ impl Gl {
                 v.extend_from_slice(&uvs[i * 2..i * 2 + 2]);
             } else {
                 v.extend_from_slice(&[0.0, 0.0]);
+            }
+            if colors.len() >= (i + 1) * 3 {
+                v.extend_from_slice(&colors[i * 3..i * 3 + 3]);
+            } else {
+                v.extend_from_slice(&[1.0, 1.0, 1.0]);
             }
         }
         let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -274,12 +279,13 @@ impl Gl {
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 32,
+                    array_stride: 44,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 2 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 32, shader_location: 3 },
                     ],
                 })],
             },
@@ -310,7 +316,7 @@ impl Gl {
     }
 
     /// Dibuja un fotograma. Los formatos de los arrays: ver docs/FASE1.md.
-    /// `draws`: 4 u32 por dibujo `[geometria, objeto, material, flags]`, ya en el orden final de pintado.
+    /// `draws`: 8 u32 por dibujo `[geometria, objeto, material, flags, primer indice, n indices, 0, 0]`, ya en el orden final de pintado.
     pub fn frame(&mut self, globals: &[f32], objects: &[f32], materials: &[f32], lights: &[f32], draws: &[u32]) {
         if globals.len() < GLOBALS_F {
             return;
@@ -334,7 +340,7 @@ impl Gl {
                 ],
             }));
         }
-        for d in draws.chunks_exact(4) {
+        for d in draws.chunks_exact(8) {
             self.ensure_pipeline(d[3]);
         }
         let frame = match self.surface.get_current_texture() {
@@ -367,16 +373,17 @@ impl Gl {
                 ..Default::default()
             });
             p.set_bind_group(0, self.bg.as_ref(), &[]);
-            for (i, d) in draws.chunks_exact(4).enumerate() {
+            for (i, d) in draws.chunks_exact(8).enumerate() {
                 let Some(g) = self.geoms.get(&d[0]) else { continue };
                 p.set_pipeline(&self.pipelines[&(d[3] & 31)]);
                 p.set_vertex_buffer(0, g.vb.slice(..));
                 p.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
-                p.draw_indexed(0..g.n, 0, i as u32..i as u32 + 1);
-                tris += (g.n / 3) as u64;
+                let (first, n) = (d[4].min(g.n), d[5].min(g.n.saturating_sub(d[4].min(g.n))));
+                p.draw_indexed(first..first + n, 0, i as u32..i as u32 + 1);
+                tris += (n / 3) as u64;
             }
         }
         self.queue.submit([enc.finish()]);
-        self.stats = [(draws.len() / 4) as f32, tris as f32, 0.0];
+        self.stats = [(draws.len() / 8) as f32, tris as f32, 0.0];
     }
 }
