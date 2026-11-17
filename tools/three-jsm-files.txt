@@ -4,3 +4,20 @@ utils/BufferGeometryUtils.js
 geometries/DecalGeometry.js
 utils/SkeletonUtils.js
 lights/RectAreaLightUniformsLib.js
+
+# postproceso (fase 4)
+postprocessing/EffectComposer.js
+postprocessing/Pass.js
+postprocessing/RenderPass.js
+postprocessing/ShaderPass.js
+postprocessing/MaskPass.js
+postprocessing/GTAOPass.js
+postprocessing/UnrealBloomPass.js
+postprocessing/SMAAPass.js
+postprocessing/OutputPass.js
+shaders/CopyShader.js
+shaders/GTAOShader.js
+shaders/PoissonDenoiseShader.js
+shaders/LuminosityHighPassShader.js
+shaders/SMAAShader.js
+shaders/OutputShader.js

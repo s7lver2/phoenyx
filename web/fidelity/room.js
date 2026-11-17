@@ -426,9 +426,45 @@ if (sceneId === 'interior' || sceneId === 'piscina-sol') {
   modelsDone = modelsDone.then(() => scene.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } }));
 }
 
+// ---- escena 'rt': una escena pequena dibujada a render targets y mostrada como map (pantallas de vents.ts, snap de game.ts) ----
+let draw = () => renderer.render(scene, camera);
+if (sceneId === 'rt') {
+  const inner = new THREE.Scene();
+  inner.background = new THREE.Color(0x203040);
+  inner.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
+  const dl = new THREE.DirectionalLight(0xfff0d0, 2);
+  dl.position.set(2, 3, 1);
+  inner.add(dl);
+  [[-0.9, 0xc04040], [0, 0x40a060], [0.9, 0x4060c0]].forEach(([x, c], i) => {
+    const m = new THREE.Mesh(i === 1 ? new THREE.SphereGeometry(0.4, 24, 16) : new THREE.BoxGeometry(0.6, 0.6 + i * 0.2, 0.6), new THREE.MeshStandardMaterial({ color: c, roughness: 0.5, metalness: i === 2 ? 0.7 : 0 }));
+    m.position.set(x, 0.3, 0);
+    m.rotation.y = 0.5 * i;
+    inner.add(m);
+  });
+  const ic = new THREE.PerspectiveCamera(60, 4 / 3, 0.1, 20);
+  ic.position.set(0.4, 1.1, 3);
+  ic.lookAt(0, 0.3, 0);
+  const rt = new THREE.WebGLRenderTarget(512, 384, { type: THREE.HalfFloatType });
+  const rt2 = new THREE.WebGLRenderTarget(320, 240);
+  const show = (tex, x, w) => {
+    const p = new THREE.Mesh(new THREE.PlaneGeometry(w, w * 0.75), new THREE.MeshBasicMaterial({ map: tex }));
+    p.position.set(x, 1.5, 0);
+    scene.add(p);
+  };
+  show(rt.texture, -1.4, 2.2);
+  show(rt2.texture, 1.4, 1.6);
+  draw = () => {
+    renderer.setRenderTarget(rt);
+    renderer.render(inner, ic);
+    renderer.setRenderTarget(rt2);
+    renderer.render(inner, ic);
+    renderer.setRenderTarget(null);
+    renderer.render(scene, camera);
+  };
+}
+
 // contrato de tools/fidelity/capture.mjs
 let timer = 0;
-const draw = () => renderer.render(scene, camera);
 const loop = () => (draw(), (timer = requestAnimationFrame(loop)));
 window.__capture = {
   ready: false,

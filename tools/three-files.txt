@@ -71,3 +71,7 @@ objects/Skeleton.js
 objects/SkinnedMesh.js
 objects/LineLoop.js
 helpers/SkeletonHelper.js
+materials/ShaderMaterial.js
+materials/MeshNormalMaterial.js
+renderers/WebGLRenderTarget.js
+core/RenderTarget.js

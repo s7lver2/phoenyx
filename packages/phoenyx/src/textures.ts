@@ -1,6 +1,6 @@
 // Subida de texturas de three (Texture, CanvasTexture, DataTexture) a phoenyx-gl, con su muestreador y su clave por material.
 // @ts-nocheck (usa el JS de three copiado)
-import { SRGBColorSpace, RepeatWrapping, ClampToEdgeWrapping, MirroredRepeatWrapping, NearestFilter, LinearFilter, NearestMipmapNearestFilter, NearestMipmapLinearFilter, LinearMipmapNearestFilter, LinearMipmapLinearFilter } from './three/constants.js';
+import { HalfFloatType, FloatType, SRGBColorSpace, RepeatWrapping, ClampToEdgeWrapping, MirroredRepeatWrapping, NearestFilter, LinearFilter, NearestMipmapNearestFilter, NearestMipmapLinearFilter, LinearMipmapNearestFilter, LinearMipmapLinearFilter } from './three/constants.js';
 
 /** Lado maximo de textura del dispositivo por defecto en WebGPU (max_texture_dimension_2d). */
 const MAX_TEX = 8192;
@@ -19,6 +19,10 @@ export class TextureCache {
   private scratch: HTMLCanvasElement | null = null;
   /** texturas subidas (para `renderer.info.memory.textures`) */
   count = 0;
+  /** id de textura del render target que se esta dibujando: no se puede leer a la vez (feedback), se trata como no lista */
+  avoid = 0;
+  private rts = new WeakMap<object, { id: number; depthId: number; w: number; h: number; fmt: number }>();
+  private rtOf = new WeakMap<object, object>();
 
   constructor(private gl: any) {}
 
@@ -68,10 +72,39 @@ export class TextureCache {
     return { w: cw, h: ch, data: tex.flipY ? flipRows(rgba, cw, ch) : rgba };
   }
 
+  /** Registra (o redimensiona) el render target en la GPU y devuelve el id de su textura de color. */
+  target(rt: any): number {
+    const fmt = rt.texture.type === HalfFloatType || rt.texture.type === FloatType ? 1 : 2;
+    const w = Math.max(1, Math.floor(rt.width)), h = Math.max(1, Math.floor(rt.height));
+    let rec = this.rts.get(rt);
+    const depthTex = rt.depthTexture ?? null;
+    if (rec && rec.w === w && rec.h === h && rec.fmt === fmt && !!rec.depthId === !!depthTex) return rec.id;
+    if (!rec) {
+      const r = { id: this.nextTex++, depthId: 0, w: 0, h: 0, fmt };
+      rec = r;
+      this.rts.set(rt, r);
+      this.count++;
+      this.ids.set(rt.texture, { id: r.id, version: -1, source: null, rt: true } as any);
+      this.rtOf.set(rt.texture, rt);
+      rt.addEventListener('dispose', () => {
+        if (this.rts.get(rt) !== r) return;
+        this.gl.drop_target(r.id);
+        this.rts.delete(rt);
+        this.count--;
+      });
+    }
+    rec.depthId = depthTex ? rec.depthId || this.nextTex++ : 0;
+    if (depthTex) this.ids.set(depthTex, { id: rec.depthId, version: -1, source: null, rt: true } as any);
+    rec.w = w, rec.h = h, rec.fmt = fmt;
+    this.gl.create_target(rec.id, w, h, fmt, rec.depthId);
+    return rec.id;
+  }
+
   /** Id de la textura en la GPU (0 si no esta lista); la sube de nuevo si cambio su `version`. */
   private textureId(tex: any): number {
     if (!tex) return 0;
     let rec = this.ids.get(tex);
+    if (rec && (rec as any).rt) return rec.id === this.avoid ? 0 : rec.id;
     if (rec && rec.version === tex.version && rec.source === tex.image) return rec.id;
     const px = this.pixels(tex);
     if (!px) return rec ? rec.id : 0;
@@ -91,6 +124,11 @@ export class TextureCache {
     rec.version = tex.version;
     rec.source = tex.image;
     return rec.id;
+  }
+
+  /** Id de GPU de cualquier textura (subiendola si hace falta). */
+  idOf(tex: any): number {
+    return this.textureId(tex);
   }
 
   private samplerId(tex: any): number {

@@ -101,6 +101,33 @@ struct Slot {
     n: u32,
 }
 
+/// Render target: color (RGBA16F o RGBA8) y profundidad propios; el color tambien se registra como textura para leerlo.
+struct Target {
+    view: wgpu::TextureView,
+    depth: wgpu::TextureView,
+    fmt: u32,
+    w: u32,
+    h: u32,
+    color_id: u32,
+    depth_id: u32,
+}
+
+/// Limpieza pedida con `clear()` para el proximo dibujo sobre ese destino.
+#[derive(Default, Clone, Copy)]
+struct Pending {
+    color: Option<[f64; 4]>,
+    depth: bool,
+}
+
+/// Formato de color segun el codigo de destino: 0 pantalla, 1 RGBA16F, 2 RGBA8.
+fn target_format(fmt: u32, screen: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    match fmt {
+        1 => wgpu::TextureFormat::Rgba16Float,
+        2 => wgpu::TextureFormat::Rgba8Unorm,
+        _ => screen,
+    }
+}
+
 struct Geom {
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
@@ -180,6 +207,9 @@ pub struct Gl {
     geoms: HashMap<u32, Geom>,
     clear: [f64; 4],
     stats: [f32; 3],
+    targets: HashMap<u32, Target>,
+    cur: u32,
+    pending: HashMap<u32, Pending>,
 }
 
 fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
@@ -368,6 +398,9 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         geoms: HashMap::new(),
         clear: [0.0, 0.0, 0.0, 1.0],
         stats: [0.0; 3],
+        targets: HashMap::new(),
+        cur: u32::MAX,
+        pending: HashMap::new(),
     })
 }
 
@@ -382,6 +415,70 @@ impl Gl {
         self.cfg.height = h;
         self.surface.configure(&self.device, &self.cfg);
         self.depth = depth_view(&self.device, w, h);
+    }
+
+    /// Crea (o reemplaza) un render target. `color_id` es su id de textura (para leerlo como `map` o entrada de un pase);
+    /// `depth_id` != 0 registra tambien su profundidad como textura legible. `fmt`: 1 RGBA16F, 2 RGBA8.
+    pub fn create_target(&mut self, color_id: u32, w: u32, h: u32, fmt: u32, depth_id: u32) {
+        let (w, h) = (w.max(1), h.max(1));
+        let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        let color = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: target_format(fmt, self.cfg.format),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let depth = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = color.create_view(&Default::default());
+        let dview = depth.create_view(&Default::default());
+        self.textures.insert(color_id, view.clone());
+        if depth_id != 0 {
+            self.textures.insert(depth_id, dview.clone());
+        }
+        self.bgs.clear();
+        self.targets.insert(color_id, Target { view, depth: dview, fmt, w, h, color_id, depth_id });
+        self.pending.remove(&color_id);
+    }
+
+    pub fn drop_target(&mut self, color_id: u32) {
+        if let Some(t) = self.targets.remove(&color_id) {
+            self.textures.remove(&t.color_id);
+            if t.depth_id != 0 {
+                self.textures.remove(&t.depth_id);
+            }
+            self.bgs.clear();
+        }
+        self.pending.remove(&color_id);
+        if self.cur == color_id {
+            self.cur = u32::MAX;
+        }
+    }
+
+    /// Destino de los siguientes dibujos: el id de un render target o u32::MAX para la pantalla.
+    pub fn set_target(&mut self, id: u32) {
+        self.cur = if self.targets.contains_key(&id) { id } else { u32::MAX };
+    }
+
+    /// `WebGLRenderer.clear`: el siguiente dibujo sobre el destino actual limpia color y/o profundidad.
+    pub fn clear(&mut self, r: f64, g: f64, b: f64, a: f64, color: bool, depth: bool) {
+        let p = self.pending.entry(self.cur).or_default();
+        if color {
+            p.color = Some([r, g, b, a]);
+        }
+        p.depth |= depth;
     }
 
     /// Crea o reemplaza una geometria: posiciones y normales de 3 floats, uvs de 2 (puede venir vacio) e indices u32.
@@ -602,14 +699,18 @@ impl Gl {
 
     /// `flags` de un dibujo: bit 0 doble cara (sin culling), bit 1 giro de caras en sentido horario, bit 2 transparente,
     /// bit 3 escribe profundidad, bit 4 prueba de profundidad. Los bits 5 (FLIP_SIDED) y 6 (DOUBLE_SIDED) solo los usa el shader.
-    fn ensure_pipeline(&mut self, flags: u32) {
+    fn ensure_pipeline(&mut self, flags: u32, fmt: u32) {
+        let key = (flags & 31) | (fmt << 5);
         let flags = flags & 31;
-        if self.pipelines.contains_key(&flags) {
+        if self.pipelines.contains_key(&key) {
             return;
         }
+        let color_format = target_format(fmt, self.cfg.format);
         // como three: siempre se descarta la cara trasera; BackSide y las matrices con determinante negativo cambian el sentido de giro
         let cull = if flags & 1 != 0 { None } else { Some(wgpu::Face::Back) };
-        let front = if flags & 2 != 0 { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw };
+        // en un render target la y de clip va invertida: el giro de las caras se invierte tambien
+        let cw = (flags & 2 != 0) != (fmt != 0);
+        let front = if cw { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw };
         // three NormalBlending: SRC_ALPHA, ONE_MINUS_SRC_ALPHA para el color; ONE, ONE_MINUS_SRC_ALPHA para el alfa
         let blend = (flags & 4 != 0).then_some(wgpu::BlendState {
             color: wgpu::BlendComponent {
@@ -646,7 +747,7 @@ impl Gl {
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: self.cfg.format,
+                    format: color_format,
                     blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -664,7 +765,7 @@ impl Gl {
             multiview_mask: None,
             cache: None,
         });
-        self.pipelines.insert(flags, pl);
+        self.pipelines.insert(key, pl);
     }
 
     /// Reserva los mapas de sombra (una capa por luz con sombra, todas de `size` x `size`). Deja los mapas vacios.
@@ -787,22 +888,36 @@ impl Gl {
             }));
         }
         let nmain = (main_draws as usize * 12).min(draws.len());
+        let (tfmt, tview, tdepth) = match self.targets.get(&self.cur) {
+            Some(t) => (t.fmt, Some(t.view.clone()), Some(t.depth.clone())),
+            None => (0, None, None),
+        };
         for d in draws[..nmain].chunks_exact(12) {
-            self.ensure_pipeline(d[3]);
+            self.ensure_pipeline(d[3], tfmt);
             self.ensure_tex_bg(d[6]);
         }
         for d in draws[nmain..].chunks_exact(12) {
             self.ensure_shadow_pipeline(d[3]);
             self.ensure_tex_bg(d[6]);
         }
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            _ => {
-                self.surface.configure(&self.device, &self.cfg);
-                return false;
+        let (view, _frame) = match tview {
+            Some(v) => (v, None),
+            None => {
+                let frame = match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+                    _ => {
+                        self.surface.configure(&self.device, &self.cfg);
+                        return false;
+                    }
+                };
+                (frame.texture.create_view(&Default::default()), Some(frame))
             }
         };
-        let view = frame.texture.create_view(&Default::default());
+        let depth_view = tdepth.as_ref().unwrap_or(&self.depth).clone();
+        // limpieza: la de clear() pendiente, o la de autoClear (globals[48]: bit 0 color, bit 1 profundidad)
+        let pend = self.pending.remove(&self.cur).unwrap_or_default();
+        let clear_color = pend.color.or_else(|| (globals[48] as u32 & 1 != 0).then_some(self.clear));
+        let clear_depth = pend.depth || (globals[48] as u32 & 2 != 0);
         let mut enc = self.device.create_command_encoder(&Default::default());
         let mut tris = 0u64;
         // pasadas de sombras: [capa, primer dibujo, n dibujos, ancho, alto] por luz que se repinta
@@ -848,13 +963,16 @@ impl Gl {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: self.clear[0], g: self.clear[1], b: self.clear[2], a: self.clear[3] }),
+                        load: match clear_color {
+                            Some(c) => wgpu::LoadOp::Clear(wgpu::Color { r: c[0], g: c[1], b: c[2], a: c[3] }),
+                            None => wgpu::LoadOp::Load,
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations { load: if clear_depth { wgpu::LoadOp::Clear(1.0) } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 ..Default::default()
@@ -866,7 +984,7 @@ impl Gl {
                 if d[8] == 0 || i >= 65536 {
                     continue;
                 }
-                p.set_pipeline(&self.pipelines[&(d[3] & 31)]);
+                p.set_pipeline(&self.pipelines[&((d[3] & 31) | (tfmt << 5))]);
                 if d[6] != last_key {
                     p.set_bind_group(1, &self.bgs[&d[6]], &[]);
                     last_key = d[6];

@@ -10,7 +10,7 @@ struct Globals {
     clear: vec4<f32>,    // color de fondo (lo usa el anfitrion Rust)
     dim: vec4<f32>,      // x ancho, y alto, z numero de luces
     amb: vec4<f32>,      // rgb luz ambiente (suma de AmbientLight * intensidad)
-    pad0: vec4<f32>,     // x numero de sombras, y tipo de sombra (0 Basic, 1 PCF, 2 PCFSoft)
+    pad0: vec4<f32>,     // x numero de sombras, y tipo de sombra (0 Basic, 1 PCF, 2 PCFSoft), z salida lineal (render target)
     pad1: vec4<f32>,
 };
 
@@ -116,6 +116,10 @@ fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @locatio
     var clip = g.proj * vp;
     // three (WebGL) usa z de clip en [-w, w]; WebGPU, en [0, w]
     clip.z = (clip.z + clip.w) * 0.5;
+    // un render target guarda la imagen como WebGL (fila 0 = abajo): se invierte la y de clip
+    if (g.pad0.z > 0.5) {
+        clip.y = -clip.y;
+    }
     var out: VOut;
     out.pos = clip;
     out.vpos = vp.xyz;
@@ -424,11 +428,13 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
     let uvB = uvT(m, 4u, in.uv);
     let q0 = dpdx(in.vpos);
     // WebGPU tiene la y de pantalla hacia abajo y GL hacia arriba: dFdy de GLSL = -dpdy
-    let q1 = -dpdy(in.vpos);
+    // (en un render target la y ya va hacia arriba)
+    let gy = select(-1.0, 1.0, g.pad0.z > 0.5);
+    let q1 = gy * dpdy(in.vpos);
     let stN0 = dpdx(uvN);
-    let stN1 = -dpdy(uvN);
+    let stN1 = gy * dpdy(uvN);
     let dSTdx = dpdx(uvB);
-    let dSTdy = -dpdy(uvB);
+    let dSTdy = gy * dpdy(uvB);
     let sNormal = textureSample(tex_normal, smp_normal, uvN);
     let bumpScale = m.tp.w * backSgn;
     let Hll = bumpScale * textureSample(tex_bump, smp_bump, uvB).x;
@@ -572,8 +578,10 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
     if (g.p0.x > 0.5) {
         rgb = ACESFilmicToneMapping(rgb);
     }
-    // colorspace_fragment (salida sRGB)
-    rgb = sRGBTransferOETF(rgb);
+    // colorspace_fragment (salida sRGB; con salida lineal, a un render target, no se codifica)
+    if (g.pad0.z < 0.5) {
+        rgb = sRGBTransferOETF(rgb);
+    }
     // fog_fragment: se mezcla despues de codificar, con el color de la niebla ya en el espacio de salida
     if (m.misc.z > 0.5 && g.p0.y > 0.5) {
         let depth = -in.vpos.z;

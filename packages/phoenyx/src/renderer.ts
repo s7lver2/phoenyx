@@ -6,7 +6,7 @@ import { Packer } from './pack';
 import { TextureCache } from './textures';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
-import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace } from './three/constants.js';
+import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace } from './three/constants.js';
 
 /** Si el anfitrion no sirve el wasm junto al modulo, define `globalThis.PHOENYX_WASM_URL` antes de crear el renderer. */
 const wasmUrl = () => (globalThis as any).PHOENYX_WASM_URL;
@@ -16,6 +16,10 @@ export class WebGLRenderer {
   outputColorSpace = SRGBColorSpace;
   toneMapping = NoToneMapping;
   toneMappingExposure = 1;
+  autoClear = true;
+  autoClearColor = true;
+  autoClearDepth = true;
+  autoClearStencil = true;
   /** Se resuelve cuando la GPU esta lista; `render()` antes no hace nada. */
   ready: Promise<void>;
   info = {
@@ -46,6 +50,7 @@ export class WebGLRenderer {
   /** como three: enabled, type (BasicShadowMap 0, PCFShadowMap 1, PCFSoftShadowMap 2), autoUpdate y needsUpdate */
   shadowMap = { enabled: false, autoUpdate: true, needsUpdate: false, type: 1 };
   private disposed = false;
+  private rt: any = null;
 
   constructor(params: { canvas?: HTMLCanvasElement; antialias?: boolean; alpha?: boolean; powerPreference?: string } = {}) {
     this.domElement = params.canvas ?? document.createElement('canvas');
@@ -83,6 +88,50 @@ export class WebGLRenderer {
   setClearColor(color: any, alpha = 1) {
     this.clearColor.set(color);
     this.clearAlpha = alpha;
+  }
+  getClearColor(target: any) {
+    return target.copy(this.clearColor);
+  }
+  setClearAlpha(a: number) {
+    this.clearAlpha = a;
+  }
+  getClearAlpha() {
+    return this.clearAlpha;
+  }
+
+  /** Destino de los dibujos siguientes: un WebGLRenderTarget o null (la pantalla). */
+  setRenderTarget(rt: any, _activeCubeFace?: number, _activeMipmapLevel?: number) {
+    this.rt = rt ?? null;
+    this.syncTarget();
+  }
+  getRenderTarget() {
+    return this.rt;
+  }
+  /** Lleva a la GPU el destino actual (crea o redimensiona el RT) y evita leer su textura mientras se dibuja en ella. */
+  private syncTarget() {
+    if (!this.gl) return;
+    if (this.rt) {
+      const id = this.textures.target(this.rt);
+      this.textures.avoid = id;
+      this.gl.set_target(id);
+    } else {
+      this.textures.avoid = 0;
+      this.gl.set_target(0xffffffff);
+    }
+  }
+  /** WebGLRenderer.clear: el siguiente dibujo en el destino actual limpia color y/o profundidad. */
+  clear(color = true, depth = true, _stencil = true) {
+    if (!this.gl) return;
+    this.syncTarget();
+    const rgb = { r: 0, g: 0, b: 0 };
+    this.clearColor.getRGB(rgb, this.rt ? LinearSRGBColorSpace : this.outputColorSpace);
+    this.gl.clear(rgb.r, rgb.g, rgb.b, this.clearAlpha, !!color, !!depth);
+  }
+  clearColorBuffer() {
+    this.clear(true, false, false);
+  }
+  clearDepth() {
+    this.clear(false, true, false);
   }
 
   private insts = new WeakMap<object, { id: number; key: string }>();
@@ -174,15 +223,19 @@ export class WebGLRenderer {
       return;
     }
     this.gl.resize(this.domElement.width, this.domElement.height);
+    this.syncTarget();
+    const rtOut = !!this.rt;
     if (this.info.autoReset) this.info.reset();
     // fondo: scene.background (Color) o el color de limpieza, convertido al espacio de salida como hace three
     const rgb = { r: 0, g: 0, b: 0 };
-    const bg = scene.background && scene.background.isColor ? scene.background : this.clearColor;
-    bg.getRGB(rgb, this.outputColorSpace);
+    const forceClear = !!(scene.background && scene.background.isColor);
+    const bg = forceClear ? scene.background : this.clearColor;
+    const space = rtOut ? LinearSRGBColorSpace : this.outputColorSpace;
+    bg.getRGB(rgb, space);
     const alpha = scene.background && scene.background.isColor ? 1 : this.clearAlpha;
-    const tm = this.toneMapping === ACESFilmicToneMapping ? 1 : 0;
-    if (this.toneMapping !== NoToneMapping && !tm) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
-    const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: this.outputColorSpace, shadow: this.shadowMap }, (g) => this.geomId(g), (m) => this.textures.materialKey(m), (o) => this.instInfo(o));
+    const tm = !rtOut && this.toneMapping === ACESFilmicToneMapping ? 1 : 0;
+    if (!rtOut && this.toneMapping !== NoToneMapping && this.toneMapping !== ACESFilmicToneMapping) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
+    const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, clearFlags: (this.autoClear && this.autoClearColor) || forceClear ? (this.autoClear && this.autoClearDepth ? 3 : 1) : this.autoClear && this.autoClearDepth ? 2 : 0, shadow: this.shadowMap }, (g) => this.geomId(g), (m) => this.textures.materialKey(m), (o) => this.instInfo(o));
     // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
     if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {
       this.gl.set_ltc(UniformsLib.LTC_FLOAT_1.image.data, UniformsLib.LTC_FLOAT_2.image.data);

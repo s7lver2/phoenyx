@@ -53,6 +53,10 @@ export interface FrameState {
   /** color de fondo ya en el espacio de salida (lo que three manda a gl.clearColor) */
   clear: [number, number, number, number];
   outputColorSpace: string;
+  /** dibujo a un render target: salida lineal, sin tone mapping ni codificacion sRGB (como three con renderTarget != null) */
+  linear?: boolean;
+  /** bit 0: limpiar color, bit 1: limpiar profundidad (autoClear de three) */
+  clearFlags?: number;
   shadow: { enabled: boolean; type: number; autoUpdate: boolean; needsUpdate: boolean };
 }
 
@@ -368,10 +372,11 @@ export class Packer {
     g[52] = amb[0];
     g[53] = amb[1];
     g[54] = amb[2];
-    g[48] = 0;
     g[51] = camera.isOrthographicCamera ? 1 : 0;
     g[50] = Math.min(count, MAX_LIGHTS);
     g[56] = nLayers;
+    g[58] = st.linear ? 1 : 0;
+    g[48] = st.clearFlags ?? 3;
     g[57] = st.shadow.type === 3 ? 2 : st.shadow.type;
 
     return {
