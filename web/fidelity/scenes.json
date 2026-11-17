@@ -32,5 +32,6 @@
   { "id": "ao-denoise", "query": "renderer=@R&scene=ao-denoise&fog=exp", "advance": 2, "nota": "salida con denoise de Poisson" },
   { "id": "ao-depth", "query": "renderer=@R&scene=ao-depth&fog=exp", "advance": 2, "nota": "profundidad lineal de GTAOPass" },
   { "id": "ao-normal", "query": "renderer=@R&scene=ao-normal&fog=exp", "advance": 2, "nota": "normales de GTAOPass" },
+  { "id": "skin", "query": "renderer=@R&scene=skin&fog=exp", "advance": 2, "nota": "SkinnedMesh de 3 huesos, dos poses con el mismo material y geometria" },
   { "id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces" }
 ]

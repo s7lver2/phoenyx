@@ -101,7 +101,7 @@ export class Packer {
   forceShadows = false;
   private sSize = 0;
 
-  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null): Packed {
+  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number): Packed {
     if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
     if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
     this.projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -217,6 +217,8 @@ export class Packer {
       const mi = matIndex(m);
       const ii = o.isInstancedMesh ? instInfo(o) : null;
       if (o.isInstancedMesh && (!ii || ii.count === 0)) continue;
+      // malla con piel: su tramo de huesos (0 = sin piel; sin skinIndex/skinWeight se dibuja como Mesh)
+      const bk = o.isSkinnedMesh && it.geometry.attributes.skinIndex && it.geometry.attributes.skinWeight ? boneInfo(o) : 0;
       // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
       const flip = o.matrixWorld.determinant() < 0;
       const common = (o.receiveShadow ? 256 : 0) | (m.transparent ? 4 : 0) | (m.depthWrite !== false && m.depthTest !== false ? 8 : 0) | (m.depthTest !== false ? 16 : 0);
@@ -231,7 +233,7 @@ export class Packer {
         common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
       const emit = (fl: number) => {
         if (!ii) {
-          draws.push(gid, no, mi, fl, first, idx, tk, 0xffffffff, 1, 0, 0, 0);
+          draws.push(gid, no, mi, fl, first, idx, tk, 0xffffffff, 1, 0, 0, bk);
           triangles += idx / 3;
         } else {
           // una malla con mas de 65535 instancias se parte en varios dibujos (instance_index lleva 16 bits de instancia)
@@ -290,7 +292,8 @@ export class Packer {
         const flip = o.matrixWorld.determinant() < 0;
         const alpha = m.alphaTest > 0 && m.map && textureReady(m.map) ? 512 : 0;
         const fl = (side === DoubleSide ? 1 : 0) | ((side === BackSide) !== flip ? 2 : 0) | alpha;
-        if (!ii) draws.push(gid, rec, mi, fl, first, idx, tk, 0xffffffff, 1, 0, layer, 0);
+        const bk = o.isSkinnedMesh && geo.attributes.skinIndex && geo.attributes.skinWeight ? boneInfo(o) : 0;
+        if (!ii) draws.push(gid, rec, mi, fl, first, idx, tk, 0xffffffff, 1, 0, layer, bk);
         else for (let s0 = 0; s0 < ii.count; s0 += 65535) draws.push(gid, rec, mi, fl, first, idx, tk, ii.id, Math.min(65535, ii.count - s0), s0, layer, 0);
       }
       shadowPasses.push(layer, start, draws.length / 12 - start, shadow.mapSize.x, shadow.mapSize.y);
@@ -426,7 +429,7 @@ export class Packer {
         if (object.autoUpdate === true) object.update(camera);
       } else if (object.isLight) this.lights.push(object);
       else if (object.isMesh) {
-        if (object.isSkinnedMesh) warnOnce(object.type, `${object.type} aun no esta soportado y se dibuja como Mesh`);
+        if (object.isSkinnedMesh && (!object.skeleton || !object.geometry.attributes.skinIndex)) warnOnce('skin-sin-datos', 'SkinnedMesh sin skeleton o sin skinIndex/skinWeight: se dibuja como Mesh');
         if (!object.frustumCulled || this.frustum.intersectsObject(object)) {
           // z de ordenacion: centro de la esfera envolvente, como WebGLRenderer.projectObject
           const geo = object.geometry;

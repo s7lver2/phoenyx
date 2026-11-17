@@ -235,6 +235,8 @@ pub struct Gl {
     inst_cols: Growable,
     slots: HashMap<u32, Slot>,
     inst_next: u32,
+    /// plazas de la reserva liberadas (offset, cap) que no eran las ultimas: se reutilizan con la misma capacidad
+    free: Vec<(u32, u32)>,
     bg: Option<wgpu::BindGroup>,
     pipelines: HashMap<u32, wgpu::RenderPipeline>,
     geoms: HashMap<u32, Geom>,
@@ -484,6 +486,7 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         inst_cols: Growable::new(&device, 1024),
         slots: HashMap::new(),
         inst_next: 0,
+        free: Vec::new(),
         device,
         queue,
         surface,
@@ -608,9 +611,10 @@ impl Gl {
     }
 
     /// Crea o reemplaza una geometria: posiciones y normales de 3 floats, uvs de 2 (puede venir vacio) e indices u32.
-    pub fn set_geometry(&mut self, id: u32, positions: &[f32], normals: &[f32], uvs: &[f32], colors: &[f32], indices: &[u32]) {
+    pub fn set_geometry(&mut self, id: u32, positions: &[f32], normals: &[f32], uvs: &[f32], colors: &[f32], indices: &[u32], skin_idx: &[u32], skin_w: &[f32]) {
         let n = positions.len() / 3;
-        let mut v: Vec<f32> = Vec::with_capacity(n * 11);
+        // por vertice: pos(3) nor(3) uv(2) color(3) f32, indices de hueso 4 x u16 y pesos 4 x f32 = 68 bytes (sin piel: ceros)
+        let mut v: Vec<f32> = Vec::with_capacity(n * 17);
         for i in 0..n {
             v.extend_from_slice(&positions[i * 3..i * 3 + 3]);
             if normals.len() >= (i + 1) * 3 {
@@ -627,6 +631,14 @@ impl Gl {
                 v.extend_from_slice(&colors[i * 3..i * 3 + 3]);
             } else {
                 v.extend_from_slice(&[1.0, 1.0, 1.0]);
+            }
+            if skin_idx.len() >= (i + 1) * 4 && skin_w.len() >= (i + 1) * 4 {
+                let k = &skin_idx[i * 4..i * 4 + 4];
+                v.push(f32::from_bits((k[0] & 0xFFFF) | (k[1] & 0xFFFF) << 16));
+                v.push(f32::from_bits((k[2] & 0xFFFF) | (k[3] & 0xFFFF) << 16));
+                v.extend_from_slice(&skin_w[i * 4..i * 4 + 4]);
+            } else {
+                v.extend_from_slice(&[0.0; 6]);
             }
         }
         let vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -749,16 +761,18 @@ impl Gl {
         let n = (matrices.len() / 16) as u32;
         let fits = self.slots.get(&mesh).is_some_and(|s| s.cap >= n);
         if !fits {
-            // se reserva al final (la plaza vieja se libera si era la ultima); crecer la reserva copia lo que ya habia
-            if let Some(old) = self.slots.remove(&mesh) {
-                if old.offset + old.cap == self.inst_next {
-                    self.inst_next = old.offset;
-                }
-            }
+            // la plaza vieja se libera; la nueva reutiliza un hueco libre de la misma capacidad o se reserva al final
+            self.drop_instances(mesh);
             let cap = n.max(16).next_power_of_two();
-            let offset = self.inst_next;
-            self.inst_next += cap;
-            self.grow_instances(self.inst_next);
+            let offset = match self.free.iter().position(|f| f.1 == cap) {
+                Some(i) => self.free.swap_remove(i).0,
+                None => {
+                    let o = self.inst_next;
+                    self.inst_next += cap;
+                    self.grow_instances(self.inst_next);
+                    o
+                }
+            };
             self.slots.insert(mesh, Slot { offset, cap, n });
         }
         let slot = self.slots.get_mut(&mesh).unwrap();
@@ -778,6 +792,12 @@ impl Gl {
         if let Some(old) = self.slots.remove(&mesh) {
             if old.offset + old.cap == self.inst_next {
                 self.inst_next = old.offset;
+                // si el hueco libre anterior toca el final, tambien se recoge
+                while let Some(i) = self.free.iter().position(|f| f.0 + f.1 == self.inst_next) {
+                    self.inst_next = self.free.swap_remove(i).0;
+                }
+            } else {
+                self.free.push((old.offset, old.cap));
             }
         }
     }
@@ -858,13 +878,15 @@ impl Gl {
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 44,
+                    array_stride: 68,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 2 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 32, shader_location: 3 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint16x4, offset: 44, shader_location: 4 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 52, shader_location: 5 },
                     ],
                 })],
             },
@@ -918,13 +940,15 @@ impl Gl {
                 entry_point: Some("vs_shadow"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 44,
+                    array_stride: 68,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 2 },
                         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 32, shader_location: 3 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint16x4, offset: 44, shader_location: 4 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 52, shader_location: 5 },
                     ],
                 })],
             },
@@ -1086,6 +1110,10 @@ impl Gl {
         // la malla instanciada se resuelve a su plaza de la reserva; el indice de dibujo va en los 16 bits altos de la instancia
         let mut dr = draws.to_vec();
         for c in dr.chunks_exact_mut(12) {
+            // tramo de huesos de una malla con piel: c[11] = su clave; el shader recibe offset + 1 (0 = sin piel)
+            if c[11] != 0 {
+                c[11] = self.slots.get(&c[11]).map_or(0, |sl| sl.offset + 1);
+            }
             if c[7] != u32::MAX {
                 match self.slots.get(&c[7]) {
                     Some(sl) => {

@@ -170,6 +170,41 @@ export class WebGLRenderer {
     return { id: rec.id, count, color: !!ic && ic.count >= count };
   }
 
+  private bones = new Map<object, { id: number; seen: number }>();
+  private renderCount = 0;
+  private boneBuf = new Float32Array(0);
+  private noColors = new Float32Array(0);
+
+  /** Sube el tramo de huesos de una SkinnedMesh ([bindMatrix, bindMatrixInverse, boneMatrices]) una vez por render y devuelve su clave. */
+  private boneInfo(o: any): number {
+    const sk = o.skeleton;
+    if (!sk) return 0;
+    let rec = this.bones.get(o);
+    if (!rec) this.bones.set(o, (rec = { id: this.nextInst++, seen: -1 }));
+    if (rec.seen !== this.renderCount) {
+      rec.seen = this.renderCount;
+      // como WebGLRenderer: skeleton.update() antes de dibujar
+      sk.update();
+      const bm = sk.boneMatrices;
+      if (this.boneBuf.length < bm.length + 32) this.boneBuf = new Float32Array((bm.length + 32) * 2);
+      this.boneBuf.set(o.bindMatrix.elements, 0);
+      this.boneBuf.set(o.bindMatrixInverse.elements, 16);
+      this.boneBuf.set(bm, 32);
+      this.gl.set_instances(rec.id, this.boneBuf.subarray(0, bm.length + 32), this.noColors);
+    }
+    return rec.id;
+  }
+
+  /** Libera los tramos de huesos de mallas que llevan mucho sin dibujarse (quitadas, ocultas o destruidas). */
+  private sweepBones() {
+    for (const [o, r] of this.bones) {
+      if (this.renderCount - r.seen > 512) {
+        this.gl?.drop_instances(r.id);
+        this.bones.delete(o);
+      }
+    }
+  }
+
   /** Normales de una geometria que no las trae (sin tocar la geometria del juego). */
   private normalsOf(g: any): Float32Array {
     const t = new BufferGeometry();
@@ -188,7 +223,7 @@ export class WebGLRenderer {
       if (!i) this.attrIds.set(a, (i = this.nextAttr++));
       return `${i}.${(a.data ?? a).version}.${a.count}`;
     };
-    const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(col)}:${aid(g.index)}`;
+    const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(col)}:${aid(g.index)}:${aid(g.attributes.skinIndex)}:${aid(g.attributes.skinWeight)}`;
     let rec = this.ids.get(g);
     if (rec && rec.key === key) return rec.id;
     const f32 = (a: any, n: number) => {
@@ -218,7 +253,18 @@ export class WebGLRenderer {
       });
     }
     rec.key = key;
-    this.gl.set_geometry(rec.id, f32(pos, 3), nor ? f32(nor, 3) : this.normalsOf(g), f32(uv, 2), f32(g.attributes.color, 3), index);
+    // piel: 4 indices de hueso (u32, el wasm los empaqueta a u16) y 4 pesos por vertice
+    const si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
+    let skinIdx = new Uint32Array(0), skinW = new Float32Array(0);
+    if (si && sw && si.count === pos.count) {
+      skinIdx = new Uint32Array(si.count * 4);
+      skinW = new Float32Array(si.count * 4);
+      for (let i = 0; i < si.count; i++) {
+        skinIdx[i * 4] = si.getX(i); skinIdx[i * 4 + 1] = si.getY(i); skinIdx[i * 4 + 2] = si.getZ(i); skinIdx[i * 4 + 3] = si.getW(i);
+        skinW[i * 4] = sw.getX(i); skinW[i * 4 + 1] = sw.getY(i); skinW[i * 4 + 2] = sw.getZ(i); skinW[i * 4 + 3] = sw.getW(i);
+      }
+    }
+    this.gl.set_geometry(rec.id, f32(pos, 3), nor ? f32(nor, 3) : this.normalsOf(g), f32(uv, 2), f32(g.attributes.color, 3), index, skinIdx, skinW);
     return rec.id;
   }
 
@@ -284,8 +330,9 @@ export class WebGLRenderer {
     const alpha = scene.background && scene.background.isColor ? 1 : this.clearAlpha;
     const tm = !rtOut && this.toneMapping === ACESFilmicToneMapping ? 1 : 0;
     if (!rtOut && this.toneMapping !== NoToneMapping && this.toneMapping !== ACESFilmicToneMapping) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
+    this.renderCount++;
     const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, // con scene.background (Color) three limpia siempre, segun autoClearColor/autoClearDepth aunque autoClear sea false
- clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, shadow: this.shadowMap }, (g) => this.geomId(g), (m) => this.textures.materialKey(m), (o) => this.instInfo(o));
+ clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, shadow: this.shadowMap }, (g) => this.geomId(g), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o));
     // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
     if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {
       this.gl.set_ltc(UniformsLib.LTC_FLOAT_1.image.data, UniformsLib.LTC_FLOAT_2.image.data);
@@ -302,6 +349,7 @@ export class WebGLRenderer {
     this.info.render.triangles += p.triangles;
     this.info.render.frame++;
     this.info.memory.textures = this.textures.count;
+    if (this.renderCount % 256 === 0) this.sweepBones();
   }
 
   dispose() {

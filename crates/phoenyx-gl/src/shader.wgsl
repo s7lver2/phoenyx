@@ -88,17 +88,45 @@ struct VOut {
     @location(8) sc3: vec4<f32>,
 };
 
+// skinbase_vertex / skinning_vertex / skinnormal_vertex de three: el tramo de huesos vive en la reserva de matrices (inst_mats):
+// [bindMatrix, bindMatrixInverse, hueso 0, hueso 1, ...] y `bo` = su offset + 1 (0 = sin piel)
+fn skin_pos(bo: u32, si: vec4<u32>, sw: vec4<f32>, p: vec4<f32>) -> vec4<f32> {
+    let skinVertex = inst_mats[bo - 1u] * p;
+    var skinned = vec4<f32>(0.0);
+    skinned += inst_mats[bo + 1u + si.x] * skinVertex * sw.x;
+    skinned += inst_mats[bo + 1u + si.y] * skinVertex * sw.y;
+    skinned += inst_mats[bo + 1u + si.z] * skinVertex * sw.z;
+    skinned += inst_mats[bo + 1u + si.w] * skinVertex * sw.w;
+    return vec4<f32>((inst_mats[bo] * skinned).xyz, 1.0);
+}
+
+fn skin_normal(bo: u32, si: vec4<u32>, sw: vec4<f32>, n: vec3<f32>) -> vec3<f32> {
+    var m = mat4x4<f32>(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
+    m += sw.x * inst_mats[bo + 1u + si.x];
+    m += sw.y * inst_mats[bo + 1u + si.y];
+    m += sw.z * inst_mats[bo + 1u + si.z];
+    m += sw.w * inst_mats[bo + 1u + si.w];
+    m = inst_mats[bo] * m * inst_mats[bo - 1u];
+    return (m * vec4<f32>(n, 0.0)).xyz;
+}
+
 @vertex
-fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec3<f32>, @builtin(instance_index) ii: u32) -> VOut {
+fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec3<f32>, @location(4) si: vec4<u32>, @location(5) sw: vec4<f32>, @builtin(instance_index) ii: u32) -> VOut {
     // el indice de dibujo va en los 16 bits altos de instance_index y la instancia en los bajos
     let di = ii >> 16u;
     let k = ii & 0xFFFFu;
     let d = draws[di * 3u];
     let d1 = draws[di * 3u + 1u];
+    let bo = draws[di * 3u + 2u].w;
     let o = objects[d.y];
     var p = vec4<f32>(position, 1.0);
     var nrm = normal;
     var icol = vec3<f32>(1.0);
+    if (bo != 0u) {
+        // skinnormal_vertex antes de la matriz normal y skinning_vertex antes de la proyeccion
+        nrm = skin_normal(bo, si, sw, nrm);
+        p = skin_pos(bo, si, sw, p);
+    }
     if (d1.w != 0xFFFFFFFFu) {
         // instancing_vertex / defaultnormal_vertex: instanceMatrix antes de la matriz del objeto
         let im4 = inst_mats[d1.w + k];
@@ -156,7 +184,7 @@ struct SOut {
 };
 
 @vertex
-fn vs_shadow(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec3<f32>, @builtin(instance_index) ii: u32) -> SOut {
+fn vs_shadow(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec3<f32>, @location(4) si: vec4<u32>, @location(5) sw: vec4<f32>, @builtin(instance_index) ii: u32) -> SOut {
     let di = ii >> 16u;
     let k = ii & 0xFFFFu;
     let d = draws[di * 3u];
@@ -164,6 +192,9 @@ fn vs_shadow(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @
     let d2 = draws[di * 3u + 2u];
     let o = objects[d.y];
     var p = vec4<f32>(position, 1.0);
+    if (d2.w != 0u) {
+        p = skin_pos(d2.w, si, sw, p);
+    }
     if (d1.w != 0xFFFFFFFFu) {
         p = inst_mats[d1.w + k] * p;
     }

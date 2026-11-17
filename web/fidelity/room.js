@@ -583,6 +583,41 @@ if ((sceneId.startsWith('ao') && sceneId !== 'ao-normales') || sceneId.startsWit
   draw = () => composer.render(0);
 }
 
+// ---- escena 'skin': cilindros con SkinnedMesh de 3 huesos (generados en codigo), mismo esqueleto base clonado con distinta pose ----
+// la pose sale de mixer.setTime (independiente del numero de fotogramas), asi three y phoenyx dibujan exactamente la misma
+function makeSkinned(x, t, mat) {
+  const h = 4, seg = 2, geo = new THREE.CylinderGeometry(0.45, 0.45, h, 16, 8, false);
+  const pos = geo.attributes.position, idx = [], w = [];
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i) + h / 2, k = Math.min(Math.floor(y / seg), 1), f = (y - k * seg) / seg;
+    idx.push(k, k + 1, 0, 0);
+    w.push(1 - f, f, 0, 0);
+  }
+  geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(idx, 4));
+  geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(w, 4));
+  const b0 = new THREE.Bone(), b1 = new THREE.Bone(), b2 = new THREE.Bone();
+  b0.position.y = -h / 2; b1.position.y = seg; b2.position.y = seg;
+  b0.add(b1); b1.add(b2);
+  const mesh = new THREE.SkinnedMesh(geo, mat);
+  mesh.add(b0);
+  mesh.bind(new THREE.Skeleton([b0, b1, b2]));
+  mesh.position.set(x, 2.1, 0);
+  mesh.scale.setScalar(0.55);
+  const q = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), a);
+  const track = (name, a) => new THREE.QuaternionKeyframeTrack(name, [0, 1, 2], [...q(0).toArray(), ...q(a).toArray(), ...q(-a).toArray()]);
+  const clip = new THREE.AnimationClip('doblar', 2, [track('.bones[1].quaternion', 0.9), track('.bones[2].quaternion', 0.7)]);
+  const mixer = new THREE.AnimationMixer(mesh);
+  mixer.clipAction(clip).play();
+  mixer.setTime(t);
+  scene.add(mesh);
+  return mesh;
+}
+if (sceneId === 'skin' || sceneId === 'skin-sombra') {
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0xc86a3a, roughness: 0.55, metalness: 0.1 });
+  makeSkinned(-1.4, 0.6, skinMat);
+  makeSkinned(1.4, 1.5, skinMat);
+}
+
 // contrato de tools/fidelity/capture.mjs
 let timer = 0;
 const loop = () => (draw(), (timer = requestAnimationFrame(loop)));
