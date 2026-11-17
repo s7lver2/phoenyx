@@ -58,3 +58,10 @@ node capture.mjs --url http://localhost:5200/fidelity --scenes ../../web/fidelit
 node capture.mjs --url http://localhost:5200/fidelity --scenes ../../web/fidelity/scenes.json --renderer phoenyx --out ../../fidelity/out/f1-phoenyx
 node compare.mjs --a ../../fidelity/out/f1-three --b ../../fidelity/out/f1-phoenyx --out ../../fidelity/out/f1-diff
 ```
+
+## Pendiente tras la revisión final (diferido a fases siguientes)
+- `drawRange` y grupos de geometría se ignoran; falta `forceSinglePass`, `toneMapped = false`, alfa 1 forzado en opacos y premultiplicado del fondo con alfa < 1.
+- Miembros de la API que usa el juego y faltan: `shadowMap` (fase 3), `setAnimationLoop`, `getDrawingBufferSize`, `setRenderTarget` (fase 4), `getContext`, `forceContextLoss`.
+- Sin recuperación automática al perder la GPU ni respaldo sin WebGPU (propuesta del diseño: three como respaldo, fase 7).
+- Asignaciones por fotograma en `pack.ts` y reconfiguración de la superficie en `Timeout`/`Occluded` (fase 8).
+- Arreglado tras la revisión: z de ordenación con el centro de la esfera envolvente, `depthWrite` solo con prueba de profundidad, clave de subida de geometrías por identidad de atributo, aviso único al perder la GPU y vista fija con cámara ortográfica.

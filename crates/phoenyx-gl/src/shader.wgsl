@@ -61,7 +61,9 @@ fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @locatio
     var out: VOut;
     out.pos = clip;
     out.vpos = vp.xyz;
-    out.vnormal = mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * normal;
+    // FLIP_SIDED (material BackSide): three invierte la normal en el vertex shader
+    let flip = select(1.0, -1.0, (d.w & 32u) != 0u);
+    out.vnormal = mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * normal * flip;
     out.uv = uv;
     out.di = ii;
     return out;
@@ -90,11 +92,131 @@ fn sRGBTransferOETF(v: vec3<f32>) -> vec3<f32> {
     return select(pow(v, vec3<f32>(0.41666)) * 1.055 - vec3<f32>(0.055), v * 12.92, v <= vec3<f32>(0.0031308));
 }
 
+
+// ---- common.glsl / bsdfs.glsl ----
+const RECIPROCAL_PI = 0.3183098861837907;
+const EPSILON = 1e-6;
+
+fn pow2(x: f32) -> f32 { return x * x; }
+fn pow4(x: f32) -> f32 { let x2 = x * x; return x2 * x2; }
+
+// lights_pars_begin: getDistanceAttenuation
+fn getDistanceAttenuation(lightDistance: f32, cutoffDistance: f32, decayExponent: f32) -> f32 {
+    var distanceFalloff = 1.0 / max(pow(lightDistance, decayExponent), 0.01);
+    if (cutoffDistance > 0.0) {
+        distanceFalloff *= pow2(saturate(1.0 - pow4(lightDistance / cutoffDistance)));
+    }
+    return distanceFalloff;
+}
+
+fn F_Schlick(f0: vec3<f32>, f90: f32, dotVH: f32) -> vec3<f32> {
+    let fresnel = exp2((-5.55473 * dotVH - 6.98316) * dotVH);
+    return f0 * (1.0 - fresnel) + (f90 * fresnel);
+}
+
+fn V_GGX_SmithCorrelated(alpha: f32, dotNL: f32, dotNV: f32) -> f32 {
+    let a2 = pow2(alpha);
+    let gv = dotNL * sqrt(a2 + (1.0 - a2) * pow2(dotNV));
+    let gl = dotNV * sqrt(a2 + (1.0 - a2) * pow2(dotNL));
+    return 0.5 / max(gv + gl, EPSILON);
+}
+
+fn D_GGX(alpha: f32, dotNH: f32) -> f32 {
+    let a2 = pow2(alpha);
+    let denom = pow2(dotNH) * (a2 - 1.0) + 1.0;
+    return RECIPROCAL_PI * a2 / pow2(denom);
+}
+
+struct PhysMat {
+    diffuseColor: vec3<f32>,
+    roughness: f32,
+    specularColor: vec3<f32>,
+    specularF90: f32,
+};
+
+// BRDF_GGX
+fn BRDF_GGX(lightDir: vec3<f32>, viewDir: vec3<f32>, normal: vec3<f32>, material: PhysMat) -> vec3<f32> {
+    let f0 = material.specularColor;
+    let f90 = material.specularF90;
+    let alpha = pow2(material.roughness);
+    let halfDir = normalize(lightDir + viewDir);
+    let dotNL = saturate(dot(normal, lightDir));
+    let dotNV = saturate(dot(normal, viewDir));
+    let dotNH = saturate(dot(normal, halfDir));
+    let dotVH = saturate(dot(viewDir, halfDir));
+    let F = F_Schlick(f0, f90, dotVH);
+    let V = V_GGX_SmithCorrelated(alpha, dotNL, dotNV);
+    let D = D_GGX(alpha, dotNH);
+    return F * (V * D);
+}
+
+fn BRDF_Lambert(diffuseColor: vec3<f32>) -> vec3<f32> {
+    return RECIPROCAL_PI * diffuseColor;
+}
+
 @fragment
-fn fs(in: VOut) -> @location(0) vec4<f32> {
-    let m = materials[draws[in.di].z];
-    var rgb = m.color.rgb;   // MeshBasicMaterial: outgoingLight = diffuse
+fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
+    let dr = draws[in.di];
+    let m = materials[dr.z];
     let alpha = m.color.a;
+    // derivadas antes de cualquier rama (control uniforme)
+    let nUn = normalize(in.vnormal);
+    let ddx = dpdx(nUn);
+    let ddy = dpdy(nUn);
+    var rgb = m.color.rgb;   // MeshBasicMaterial: outgoingLight = diffuse
+
+    if (m.misc.y > 0.5) {
+        // ---- MeshStandardMaterial: meshphysical.glsl.js sin sheen, clearcoat, iridiscencia ni transmision ----
+        var normal = nUn;
+        if ((dr.w & 64u) != 0u) {   // DOUBLE_SIDED
+            normal = normal * select(-1.0, 1.0, frontFacing);
+        }
+        let metalnessFactor = m.misc.x;
+        let roughnessFactor = m.emissive.a;
+        var material: PhysMat;
+        material.diffuseColor = m.color.rgb * (1.0 - metalnessFactor);
+        let dxy = max(abs(ddx), abs(ddy));
+        let geometryRoughness = max(max(dxy.x, dxy.y), dxy.z);
+        material.roughness = max(roughnessFactor, 0.0525);
+        material.roughness += geometryRoughness;
+        material.roughness = min(material.roughness, 1.0);
+        material.specularColor = mix(vec3<f32>(0.04), m.color.rgb, metalnessFactor);
+        material.specularF90 = 1.0;
+
+        // lights_fragment_begin
+        let geometryPosition = in.vpos;
+        // isOrthographic (g.dim.w): la direccion de vista es fija
+        let geometryViewDir = select(normalize(-in.vpos), vec3<f32>(0.0, 0.0, 1.0), g.dim.w > 0.5);
+        var directDiffuse = vec3<f32>(0.0);
+        var directSpecular = vec3<f32>(0.0);
+        let nl = u32(g.dim.z);
+        for (var i = 0u; i < nl; i = i + 1u) {
+            let l = lights[i];
+            var dirL: vec3<f32>;
+            var col = l.a.yzw;
+            if (l.a.x > 0.5) {
+                // getPointLightInfo
+                let lVector = l.b.xyz - geometryPosition;
+                dirL = normalize(lVector);
+                let lightDistance = length(lVector);
+                col = col * getDistanceAttenuation(lightDistance, l.b.w, l.c.x);
+            } else {
+                // getDirectionalLightInfo
+                dirL = l.c.yzw;
+            }
+            if (any(col != vec3<f32>(0.0))) {
+                // RE_Direct_Physical
+                let dotNL = saturate(dot(normal, dirL));
+                let irradiance = dotNL * col;
+                directSpecular += irradiance * BRDF_GGX(dirL, geometryViewDir, normal, material);
+                directDiffuse += irradiance * BRDF_Lambert(material.diffuseColor);
+            }
+        }
+        // RE_IndirectDiffuse_Physical con la luz ambiente
+        let indirectDiffuse = g.amb.rgb * BRDF_Lambert(material.diffuseColor);
+        let totalDiffuse = directDiffuse + indirectDiffuse;
+        rgb = totalDiffuse + directSpecular + m.emissive.rgb;
+    }
 
     // tonemapping_fragment
     if (g.p0.x > 0.5) {

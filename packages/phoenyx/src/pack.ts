@@ -114,20 +114,18 @@ export class Packer {
       objs.set([n[0], n[1], n[2], 0, n[3], n[4], n[5], 0, n[6], n[7], n[8], 0], base + 16);
       const gid = geomId(it.geometry);
       const mi = matIndex(m);
-      // three invierte el sentido de las caras si el determinante de la matriz mundo es negativo
+      // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
       const flip = o.matrixWorld.determinant() < 0;
-      let side = m.side;
-      if (flip && side === FrontSide) side = BackSide;
-      else if (flip && side === BackSide) side = FrontSide;
-      const sideBits = (s: number) => (s === FrontSide ? 0 : s === BackSide ? 1 : 2);
-      const common = (m.transparent ? 4 : 0) | (m.depthWrite !== false ? 8 : 0) | (m.depthTest !== false ? 16 : 0);
+      const common = (m.transparent ? 4 : 0) | (m.depthWrite !== false && m.depthTest !== false ? 8 : 0) | (m.depthTest !== false ? 16 : 0);
       const idx = it.geometry.index ? it.geometry.index.count : it.geometry.attributes.position.count;
-      if (m.transparent && side === DoubleSide) {
-        // transparente de doble cara: primero las traseras, luego las frontales
-        draws.push(gid, no, mi, common | 1, gid, no, mi, common | 0);
+      const bits = (backSide: boolean, double: boolean, normalDouble: boolean) =>
+        common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
+      if (m.transparent && m.side === DoubleSide) {
+        // transparente de doble cara: primero las traseras (material BackSide), luego las frontales
+        draws.push(gid, no, mi, bits(true, false, false), gid, no, mi, bits(false, false, false));
         triangles += (idx / 3) * 2;
       } else {
-        draws.push(gid, no, mi, common | sideBits(side));
+        draws.push(gid, no, mi, bits(m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide));
         triangles += idx / 3;
       }
       no++;
@@ -188,6 +186,7 @@ export class Packer {
     g[53] = amb[1];
     g[54] = amb[2];
     g[48] = 0;
+    g[51] = camera.isOrthographicCamera ? 1 : 0;
     g[50] = Math.min(count, MAX_LIGHTS);
 
     return {
@@ -216,7 +215,16 @@ export class Packer {
           if (Array.isArray(material)) warnOnce('multimat', 'materiales multiples aun no estan soportados: se usa el primero');
           const mat = Array.isArray(material) ? material[0] : material;
           if (mat && mat.visible !== false) {
-            this.v.setFromMatrixPosition(object.matrixWorld).applyMatrix4(this.projScreen);
+            // z de ordenacion: centro de la esfera envolvente, como WebGLRenderer.projectObject
+            const geo = object.geometry;
+            if (object.boundingSphere !== undefined) {
+              if (object.boundingSphere === null) object.computeBoundingSphere();
+              this.v.copy(object.boundingSphere.center);
+            } else {
+              if (geo.boundingSphere === null) geo.computeBoundingSphere();
+              this.v.copy(geo.boundingSphere.center);
+            }
+            this.v.applyMatrix4(object.matrixWorld).applyMatrix4(this.projScreen);
             const item: Item = { object, geometry: object.geometry, material: mat, groupOrder, renderOrder: object.renderOrder, z: this.v.z, id: object.id };
             (mat.transparent ? this.transparent : this.opaque).push(item);
           }

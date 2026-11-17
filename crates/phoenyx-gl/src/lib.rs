@@ -243,17 +243,16 @@ impl Gl {
         vec![self.stats[0], self.stats[1], self.geoms.len() as f32]
     }
 
-    /// `flags` de un dibujo: bits 0-1 cara (0 frontal, 1 trasera, 2 doble), bit 2 transparente,
-    /// bit 3 escribe profundidad, bit 4 prueba de profundidad.
+    /// `flags` de un dibujo: bit 0 doble cara (sin culling), bit 1 giro de caras en sentido horario, bit 2 transparente,
+    /// bit 3 escribe profundidad, bit 4 prueba de profundidad. Los bits 5 (FLIP_SIDED) y 6 (DOUBLE_SIDED) solo los usa el shader.
     fn ensure_pipeline(&mut self, flags: u32) {
+        let flags = flags & 31;
         if self.pipelines.contains_key(&flags) {
             return;
         }
-        let cull = match flags & 3 {
-            0 => Some(wgpu::Face::Back),
-            1 => Some(wgpu::Face::Front),
-            _ => None,
-        };
+        // como three: siempre se descarta la cara trasera; BackSide y las matrices con determinante negativo cambian el sentido de giro
+        let cull = if flags & 1 != 0 { None } else { Some(wgpu::Face::Back) };
+        let front = if flags & 2 != 0 { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw };
         // three NormalBlending: SRC_ALPHA, ONE_MINUS_SRC_ALPHA para el color; ONE, ONE_MINUS_SRC_ALPHA para el alfa
         let blend = (flags & 4 != 0).then_some(wgpu::BlendState {
             color: wgpu::BlendComponent {
@@ -294,7 +293,7 @@ impl Gl {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: wgpu::PrimitiveState { cull_mode: cull, ..Default::default() },
+            primitive: wgpu::PrimitiveState { cull_mode: cull, front_face: front, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH,
                 depth_write_enabled: Some(flags & 8 != 0),
@@ -370,7 +369,7 @@ impl Gl {
             p.set_bind_group(0, self.bg.as_ref(), &[]);
             for (i, d) in draws.chunks_exact(4).enumerate() {
                 let Some(g) = self.geoms.get(&d[0]) else { continue };
-                p.set_pipeline(&self.pipelines[&d[3]]);
+                p.set_pipeline(&self.pipelines[&(d[3] & 31)]);
                 p.set_vertex_buffer(0, g.vb.slice(..));
                 p.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
                 p.draw_indexed(0..g.n, 0, i as u32..i as u32 + 1);

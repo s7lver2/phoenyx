@@ -34,6 +34,9 @@ export class WebGLRenderer {
   private clearAlpha = 1;
   private ids = new WeakMap<object, { id: number; key: string }>();
   private nextId = 1;
+  private attrIds = new WeakMap<object, number>();
+  private nextAttr = 1;
+  private lostReported = false;
   private disposed = false;
 
   constructor(params: { canvas?: HTMLCanvasElement; antialias?: boolean; alpha?: boolean; powerPreference?: string } = {}) {
@@ -76,7 +79,13 @@ export class WebGLRenderer {
   /** Sube la geometria a la GPU si es nueva o cambio (version de sus atributos) y devuelve su id. */
   private geomId(g: any): number {
     const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv;
-    const key = `${pos.version}:${nor ? nor.version : 0}:${uv ? uv.version : 0}:${g.index ? g.index.version + ':' + g.index.count : 0}`;
+    const aid = (a: any) => {
+      if (!a) return 0;
+      let i = this.attrIds.get(a);
+      if (!i) this.attrIds.set(a, (i = this.nextAttr++));
+      return `${i}.${a.version}.${a.count}`;
+    };
+    const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(g.index)}`;
     let rec = this.ids.get(g);
     if (rec && rec.key === key) return rec.id;
     const f32 = (a: any, n: number) => {
@@ -112,7 +121,7 @@ export class WebGLRenderer {
   render(scene: any, camera: any) {
     if (!this.gl) return;
     if (this.gl.is_lost()) {
-      console.error('[phoenyx] dispositivo GPU perdido');
+      if (!this.lostReported) (this.lostReported = true), console.error('[phoenyx] dispositivo GPU perdido:', this.gl.take_error());
       return;
     }
     this.gl.resize(this.domElement.width, this.domElement.height);
