@@ -1,0 +1,29 @@
+{
+  "url": "http://localhost:5200/fidelity",
+  "preset": "high",
+  "throttle": 4,
+  "perf": {
+    "sala-exp": {
+      "drawCalls": 19,
+      "triangles": 208,
+      "geometries": 18,
+      "textures": 0,
+      "frameMsMedian": 1.6,
+      "frameMsP95": 2.8,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sala-lineal": {
+      "drawCalls": 19,
+      "triangles": 208,
+      "geometries": 18,
+      "textures": 0,
+      "frameMsMedian": 1.4,
+      "frameMsP95": 2.2,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    }
+  }
+}
