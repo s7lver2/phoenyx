@@ -36,5 +36,6 @@
   { "id": "skin-sombra", "query": "renderer=@R&scene=skin-sombra&fog=exp", "advance": 2, "nota": "SkinnedMesh con sol y sombra; dos fuera de cuadro (con y sin frustumCulled)" },
   { "id": "skin-normales", "query": "renderer=@R&scene=skin-normales&fog=exp", "advance": 2, "nota": "SkinnedMesh con overrideMaterial MeshNormalMaterial" },
   { "id": "entidades", "query": "renderer=@R&scene=entidades&fog=exp", "advance": 2, "nota": "hazmat, partygoer y skinwalker (2 clones cada uno) con SkeletonUtils.clone y fundidos cruzados del AnimationMixer" },
+  { "id": "entidades-pool", "query": "renderer=@R&scene=entidades-pool&fog=exp", "advance": 2, "nota": "entidades animadas en las Poolrooms con sol, sombra, niebla y la cadena del juego (GTAO, bloom, salida, SMAA)" },
   { "id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces" }
 ]

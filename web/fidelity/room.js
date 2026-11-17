@@ -400,7 +400,7 @@ if (sceneId === 'sombra-casos') {
 }
 
 // ---- interior y piscina con modelos reales del juego proyectando sombra ----
-if (sceneId === 'interior' || sceneId === 'piscina-sol' || sceneId.startsWith('pool-fx')) {
+if (sceneId === 'interior' || sceneId === 'piscina-sol' || sceneId.startsWith('pool-fx') || sceneId === 'entidades-pool') {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   if (sceneId === 'interior') {
@@ -559,7 +559,7 @@ if (sceneId === 'ao-normales' || sceneId === 'skin-normales') {
 // ---- escenas 'ao*': GTAOPass con los valores del juego (radio 0.9, thickness 1.2, 8 muestras, mitad de resolucion) ----
 // pool-fx / pool-fx-sinao = la cadena sobre las Poolrooms con sol y sombra (sin ao = GTAOPass desactivado, como el ajuste del juego)
 // ao = cadena completa RenderPass -> GTAO -> Bloom -> Output -> SMAA; ao-ao / ao-denoise / ao-depth / ao-normal = salidas de depuracion de GTAOPass
-if ((sceneId.startsWith('ao') && sceneId !== 'ao-normales') || sceneId.startsWith('pool-fx')) {
+if ((sceneId.startsWith('ao') && sceneId !== 'ao-normales') || sceneId.startsWith('pool-fx') || sceneId === 'entidades-pool') {
   // el ruido del denoise (SimplexNoise) usa Math.random: semilla fija para que three y Phoenyx generen la misma textura
   let seed = 12345;
   Math.random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
@@ -576,7 +576,7 @@ if ((sceneId.startsWith('ao') && sceneId !== 'ao-normales') || sceneId.startsWit
   if (sceneId === 'pool-fx-sinao') ao.enabled = false;
   // pool-fx-salida: solo RenderPass -> OutputPass (el fondo scene.background se ve por el techo oculto)
   if (sceneId === 'pool-fx-salida') composer.removePass(ao);
-  if (sceneId === 'ao' || (sceneId.startsWith('pool-fx') && sceneId !== 'pool-fx-salida')) {
+  if (sceneId === 'ao' || sceneId === 'entidades-pool' || (sceneId.startsWith('pool-fx') && sceneId !== 'pool-fx-salida')) {
     composer.addPass(new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.6, 0.92));
     composer.addPass(new OutputPass());
     composer.addPass(new SMAAPass(1280, 720));
@@ -674,6 +674,8 @@ if (sceneId === 'entidades' || sceneId === 'entidades-pool') {
       root.scale.setScalar(k);
       root.position.set(x, 0.1 - box.min.y * k, 0.8 - d * 0.6);
       root.rotation.y = 0.35 - i * 0.7;
+      // en las Poolrooms (sol con sombra) las entidades proyectan y reciben sombra
+      if (sceneId === 'entidades-pool') root.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
     });
   }));
 }

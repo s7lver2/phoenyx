@@ -1,0 +1,40 @@
+{
+  "url": "http://localhost:5200/fidelity",
+  "preset": "high",
+  "throttle": 1,
+  "perf": {
+    "skin-sombra": {
+      "drawCalls": 42,
+      "triangles": 2406,
+      "geometries": 21,
+      "textures": 5,
+      "frameMsMedian": 0.8,
+      "frameMsP95": 1.2,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "entidades": {
+      "drawCalls": 25,
+      "triangles": 316548,
+      "geometries": 21,
+      "textures": 13,
+      "frameMsMedian": 0.8,
+      "frameMsP95": 1.3,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "entidades-pool": {
+      "drawCalls": 118,
+      "triangles": 1266447,
+      "geometries": 22,
+      "textures": 37,
+      "frameMsMedian": 1.8,
+      "frameMsP95": 2.7,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    }
+  }
+}
