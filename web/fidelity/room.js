@@ -122,6 +122,15 @@ if (!basic && !oneLight) {
   scene.add(new THREE.AmbientLight(0x303030, 1));
 }
 
+if (sceneId === 'luces') {
+  // hemisferio del juego y la linterna (SpotLight con penumbra y corte)
+  scene.add(new THREE.HemisphereLight(0xfff1c4, 0x3a2c0c, 0.6));
+  const sp = new THREE.SpotLight(0xfff6e0, 60, 22, 0.55, 0.75, 1.2);
+  sp.position.set(-1, 2.2, 4);
+  sp.target.position.set(1, 0, -3);
+  scene.add(sp, sp.target);
+}
+
 // objeto anidado: grupo rotado y escalado con tres cubos
 const g = new THREE.Group();
 g.position.set(-3.5, 0.6, 1);

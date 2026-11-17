@@ -8,5 +8,6 @@
   { "id": "inst", "query": "renderer=@R&scene=inst", "advance": 2, "nota": "InstancedMesh con color por instancia, count a medias y otra transparente" },
   { "id": "geoms", "query": "renderer=@R&scene=geoms", "advance": 2, "nota": "las geometrias del juego" },
   { "id": "modelos", "query": "renderer=@R&scene=modelos", "advance": 2, "nota": "GLB reales con meshopt (bate, nokia, taquilla, sombrero, pokeball, cerveza)" },
+  { "id": "luces", "query": "renderer=@R&scene=luces", "advance": 2, "nota": "HemisphereLight y SpotLight con penumbra" },
   { "id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces" }
 ]

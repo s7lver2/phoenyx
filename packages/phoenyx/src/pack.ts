@@ -185,26 +185,42 @@ export class Packer {
     const amb = [0, 0, 0];
     const v = this.v;
     let count = 0;
-    for (const type of ['point', 'directional']) {
+    // orden de lights_fragment_begin: puntuales, focos, direccionales; el hemisferio y el ambiente van al final (indirecto)
+    const hemi: number[] = [];
+    for (const type of ['point', 'spot', 'directional', 'rest']) {
       for (const l of this.lights) {
         const k = l.intensity;
-        if (l.isAmbientLight) {
-          if (type === 'point') (amb[0] += l.color.r * k, amb[1] += l.color.g * k, amb[2] += l.color.b * k);
+        if (type === 'rest') {
+          if (l.isAmbientLight) (amb[0] += l.color.r * k, amb[1] += l.color.g * k, amb[2] += l.color.b * k);
+          else if (l.isHemisphereLight) {
+            if (count++ >= MAX_LIGHTS) continue;
+            // la direccion es la posicion de la luz (y arriba por defecto) en vista, como WebGLLights
+            v.setFromMatrixPosition(l.matrixWorld).transformDirection(view);
+            hemi.push(2, l.color.r * k, l.color.g * k, l.color.b * k, l.groundColor.r * k, l.groundColor.g * k, l.groundColor.b * k, 0, 0, v.x, v.y, v.z, 0, 0, 0, 0);
+          } else if (!l.isPointLight && !l.isSpotLight && !l.isDirectionalLight) warnOnce(l.type, `la luz ${l.type} aun no esta soportada y se ignora`);
         } else if (type === 'point' && l.isPointLight) {
           if (count++ >= MAX_LIGHTS) continue;
           v.setFromMatrixPosition(l.matrixWorld).applyMatrix4(view);
           lightData.push(1, l.color.r * k, l.color.g * k, l.color.b * k, v.x, v.y, v.z, l.distance, l.decay, 0, 0, 0, 0, 0, 0, 0);
+        } else if (type === 'spot' && l.isSpotLight) {
+          if (count++ >= MAX_LIGHTS) continue;
+          v.setFromMatrixPosition(l.matrixWorld).applyMatrix4(view);
+          const px = v.x, py = v.y, pz = v.z;
+          // eje hacia la luz (posicion - objetivo) en vista, normalizado
+          v.setFromMatrixPosition(l.matrixWorld);
+          const t = new Vector3().setFromMatrixPosition(l.target.matrixWorld);
+          v.sub(t).transformDirection(view);
+          lightData.push(3, l.color.r * k, l.color.g * k, l.color.b * k, px, py, pz, l.distance, l.decay, v.x, v.y, v.z, Math.cos(l.angle), Math.cos(l.angle * (1 - l.penumbra)), 0, 0);
         } else if (type === 'directional' && l.isDirectionalLight) {
           if (count++ >= MAX_LIGHTS) continue;
           v.setFromMatrixPosition(l.matrixWorld);
           const t = new Vector3().setFromMatrixPosition(l.target.matrixWorld);
           v.sub(t).transformDirection(view);
           lightData.push(0, l.color.r * k, l.color.g * k, l.color.b * k, 0, 0, 0, 0, 0, v.x, v.y, v.z, 0, 0, 0, 0);
-        } else if (type === 'point' && !l.isPointLight && !l.isDirectionalLight) {
-          warnOnce(l.type, `la luz ${l.type} aun no esta soportada y se ignora`);
         }
       }
     }
+    lightData.push(...hemi);
     if (count > MAX_LIGHTS) warnOnce('maxlights', `hay ${count} luces y el maximo es ${MAX_LIGHTS}: sobran ${count - MAX_LIGHTS}`);
 
     // globales

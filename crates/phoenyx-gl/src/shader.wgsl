@@ -33,10 +33,10 @@ struct Mat {
 };
 
 struct Light {
-    a: vec4<f32>,        // x tipo (0 direccional, 1 puntual), yzw color * intensidad
-    b: vec4<f32>,        // xyz posicion (vista), w distancia de corte
-    c: vec4<f32>,        // x decaimiento, yzw direccion hacia la luz (vista)
-    d: vec4<f32>,
+    a: vec4<f32>,        // x tipo (0 direccional, 1 puntual, 2 hemisferio, 3 foco), yzw color * intensidad (hemisferio: cielo)
+    b: vec4<f32>,        // xyz posicion (vista; hemisferio: color del suelo), w distancia de corte
+    c: vec4<f32>,        // x decaimiento, yzw direccion hacia la luz (vista; foco: eje desde el objetivo)
+    d: vec4<f32>,        // foco: x cos(angle), y cos(angle * (1 - penumbra))
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -299,17 +299,27 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         let geometryViewDir = select(normalize(-in.vpos), vec3<f32>(0.0, 0.0, 1.0), g.dim.w > 0.5);
         var directDiffuse = vec3<f32>(0.0);
         var directSpecular = vec3<f32>(0.0);
+        var hemiIrradiance = vec3<f32>(0.0);
         let nl = u32(g.dim.z);
         for (var i = 0u; i < nl; i = i + 1u) {
             let l = lights[i];
             var dirL: vec3<f32>;
             var col = l.a.yzw;
+            if (l.a.x > 1.5 && l.a.x < 2.5) {
+                // getHemisphereLightIrradiance (geometryNormal = normal tras los mapas)
+                let hemiW = 0.5 * dot(normal, l.c.yzw) + 0.5;
+                hemiIrradiance += mix(l.b.xyz, l.a.yzw, hemiW);
+                continue;
+            }
             if (l.a.x > 0.5) {
-                // getPointLightInfo
+                // getPointLightInfo / getSpotLightInfo
                 let lVector = l.b.xyz - geometryPosition;
                 dirL = normalize(lVector);
                 let lightDistance = length(lVector);
                 col = col * getDistanceAttenuation(lightDistance, l.b.w, l.c.x);
+                if (l.a.x > 2.5) {
+                    col = col * smoothstep(l.d.x, l.d.y, dot(dirL, l.c.yzw));
+                }
             } else {
                 // getDirectionalLightInfo
                 dirL = l.c.yzw;
@@ -323,7 +333,7 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
             }
         }
         // RE_IndirectDiffuse_Physical con la luz ambiente
-        let indirectDiffuse = g.amb.rgb * BRDF_Lambert(material.diffuseColor);
+        let indirectDiffuse = (g.amb.rgb + hemiIrradiance) * BRDF_Lambert(material.diffuseColor);
         let totalDiffuse = directDiffuse + indirectDiffuse;
         let emissive = m.emissive.rgb * select(vec3<f32>(1.0), sEmis.rgb, (maps & 8u) != 0u);
         rgb = totalDiffuse + directSpecular + emissive;
