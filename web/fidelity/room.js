@@ -545,7 +545,7 @@ if (sceneId.startsWith('smaa')) {
 }
 
 // ---- escena 'ao-normales': la sala y los modelos dibujados con scene.overrideMaterial = MeshNormalMaterial (las normales de GTAOPass) ----
-if (sceneId === 'ao-normales') {
+if (sceneId === 'ao-normales' || sceneId === 'skin-normales') {
   scene.children.find((o) => o.material === mCeil)?.material;
   const nm = new THREE.MeshNormalMaterial();
   draw = () => {
@@ -612,10 +612,32 @@ function makeSkinned(x, t, mat) {
   scene.add(mesh);
   return mesh;
 }
-if (sceneId === 'skin' || sceneId === 'skin-sombra') {
+if (sceneId === 'skin' || sceneId === 'skin-sombra' || sceneId === 'skin-normales') {
   const skinMat = new THREE.MeshStandardMaterial({ color: 0xc86a3a, roughness: 0.55, metalness: 0.1 });
   makeSkinned(-1.4, 0.6, skinMat);
   makeSkinned(1.4, 1.5, skinMat);
+  if (sceneId === 'skin-sombra') {
+    // fuera de pantalla (junto a la camara): uno con frustumCulled por defecto y otro sin culling; su sombra puede entrar en cuadro
+    makeSkinned(2.6, 0.9, skinMat).position.z = 8;
+    const sinCulling = makeSkinned(-2.6, 1.2, skinMat);
+    sinCulling.position.z = 8;
+    sinCulling.frustumCulled = false;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    scene.children.find((o) => o.material === mCeil).visible = false;
+    const sun = new THREE.DirectionalLight(0xfff0d8, 2.5);
+    sun.position.set(5, 7, 6);
+    sun.target.position.set(0, 0, 0);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -9, right: 9, top: 9, bottom: -9, near: 1, far: 30 });
+    sun.shadow.camera.updateProjectionMatrix();
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.04;
+    sun.shadow.radius = 3;
+    scene.add(sun, sun.target);
+    scene.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
+  }
 }
 
 // contrato de tools/fidelity/capture.mjs
