@@ -128,6 +128,39 @@ fn target_format(fmt: u32, screen: wgpu::TextureFormat) -> wgpu::TextureFormat {
     }
 }
 
+/// Pipeline de un pase: shader (entrada `fs_*`), mezcla y formato de destino.
+struct PassPl {
+    pl: wgpu::RenderPipeline,
+}
+
+/// three -> wgpu: factores y ecuaciones de mezcla (constantes de three: 200 Zero ... 210 SrcAlphaSaturate; 100 Add ... 104 Max)
+fn blend_factor(f: u32) -> wgpu::BlendFactor {
+    match f {
+        200 => wgpu::BlendFactor::Zero,
+        201 => wgpu::BlendFactor::One,
+        202 => wgpu::BlendFactor::Src,
+        203 => wgpu::BlendFactor::OneMinusSrc,
+        204 => wgpu::BlendFactor::SrcAlpha,
+        205 => wgpu::BlendFactor::OneMinusSrcAlpha,
+        206 => wgpu::BlendFactor::DstAlpha,
+        207 => wgpu::BlendFactor::OneMinusDstAlpha,
+        208 => wgpu::BlendFactor::Dst,
+        209 => wgpu::BlendFactor::OneMinusDst,
+        210 => wgpu::BlendFactor::SrcAlphaSaturated,
+        _ => wgpu::BlendFactor::One,
+    }
+}
+
+fn blend_op(e: u32) -> wgpu::BlendOperation {
+    match e {
+        101 => wgpu::BlendOperation::Subtract,
+        102 => wgpu::BlendOperation::ReverseSubtract,
+        103 => wgpu::BlendOperation::Min,
+        104 => wgpu::BlendOperation::Max,
+        _ => wgpu::BlendOperation::Add,
+    }
+}
+
 struct Geom {
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
@@ -210,6 +243,13 @@ pub struct Gl {
     targets: HashMap<u32, Target>,
     cur: u32,
     pending: HashMap<u32, Pending>,
+    post_module: wgpu::ShaderModule,
+    post_layout: wgpu::PipelineLayout,
+    post_bgl: wgpu::BindGroupLayout,
+    post_uniforms: wgpu::Buffer,
+    post_pls: HashMap<(u32, [u32; 7], u32), PassPl>,
+    samp_linear: wgpu::Sampler,
+    samp_nearest: wgpu::Sampler,
 }
 
 fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
@@ -359,6 +399,60 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
     for (i, v) in lut.iter_mut().enumerate() {
         *v = srgb_to_lin(i as u8);
     }
+    // pases de pantalla completa: uniformes (64 vec4), 4 texturas filtrables, una sin filtrado (profundidad) y dos muestreadores
+    let post_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("phoenyx-post"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("post.wgsl").into()),
+    });
+    let ptex = |b: u32, filterable: bool| wgpu::BindGroupLayoutEntry {
+        binding: b,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        count: None,
+        ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+    };
+    let psamp = |b: u32| wgpu::BindGroupLayoutEntry {
+        binding: b,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        count: None,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+    };
+    let post_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                count: None,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            },
+            ptex(1, true),
+            ptex(2, true),
+            ptex(3, true),
+            ptex(4, true),
+            ptex(5, false),
+            psamp(6),
+            psamp(7),
+        ],
+    });
+    let post_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&post_bgl)], immediate_size: 0 });
+    let post_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 1024 * 4,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let samp_linear = device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let samp_nearest = device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        ..Default::default()
+    });
     Ok(Gl {
         tex_bgl,
         textures: HashMap::new(),
@@ -401,6 +495,13 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         targets: HashMap::new(),
         cur: u32::MAX,
         pending: HashMap::new(),
+        post_module,
+        post_layout,
+        post_bgl,
+        post_uniforms,
+        post_pls: HashMap::new(),
+        samp_linear,
+        samp_nearest,
     })
 }
 
@@ -821,6 +922,102 @@ impl Gl {
             cache: None,
         });
         self.shadow_pipelines.insert(key, pl);
+    }
+
+    /// Un pase de pantalla completa sobre el destino actual (`set_target`). `shader` es el indice del fragment en
+    /// `post.wgsl` (ver pass-registry.ts); `blend` = [modo (0 sin mezcla), srcRGB, dstRGB, ecuacion, srcA, dstA, ecuacionA]
+    /// con las constantes de three; `tex`: ids de las 4 texturas filtrables y de la de profundidad (0 = blanca).
+    pub fn pass(&mut self, shader: u32, uniforms: &[f32], blend: &[u32], tex: &[u32]) -> bool {
+        let entry = match shader {
+            0 => "fs_copy",
+            _ => return false,
+        };
+        let mut bl = [0u32; 7];
+        for (d, s) in bl.iter_mut().zip(blend) {
+            *d = *s;
+        }
+        let fmt = self.targets.get(&self.cur).map(|t| t.fmt).unwrap_or(0);
+        let key = (shader, bl, fmt);
+        if !self.post_pls.contains_key(&key) {
+            let blend_state = (bl[0] != 0).then(|| wgpu::BlendState {
+                color: wgpu::BlendComponent { src_factor: blend_factor(bl[1]), dst_factor: blend_factor(bl[2]), operation: blend_op(bl[3]) },
+                alpha: wgpu::BlendComponent { src_factor: blend_factor(bl[4]), dst_factor: blend_factor(bl[5]), operation: blend_op(bl[6]) },
+            });
+            let pl = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&self.post_layout),
+                vertex: wgpu::VertexState {
+                    module: &self.post_module,
+                    entry_point: Some(if fmt != 0 { "vs_flip" } else { "vs" }),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &self.post_module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: target_format(fmt, self.cfg.format), blend: blend_state, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            self.post_pls.insert(key, PassPl { pl });
+        }
+        let n = uniforms.len().min(1024);
+        self.queue.write_buffer(&self.post_uniforms, 0, bytemuck::cast_slice(&uniforms[..n]));
+        let view_of = |i: usize| -> &wgpu::TextureView { tex.get(i).and_then(|id| self.textures.get(id)).unwrap_or(&self.white) };
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.post_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.post_uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view_of(0)) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(view_of(1)) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(view_of(2)) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(view_of(3)) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(view_of(4)) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.samp_linear) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.samp_nearest) },
+            ],
+        });
+        let (view, _frame) = match self.targets.get(&self.cur) {
+            Some(t) => (t.view.clone(), None),
+            None => match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => (f.texture.create_view(&Default::default()), Some(f)),
+                _ => {
+                    self.surface.configure(&self.device, &self.cfg);
+                    return false;
+                }
+            },
+        };
+        let pend = self.pending.remove(&self.cur).unwrap_or_default();
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        {
+            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: match pend.color {
+                            Some(c) => wgpu::LoadOp::Clear(wgpu::Color { r: c[0], g: c[1], b: c[2], a: c[3] }),
+                            None => wgpu::LoadOp::Load,
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            p.set_pipeline(&self.post_pls[&key].pl);
+            p.set_bind_group(0, &bg, &[]);
+            p.draw(0..3, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+        true
     }
 
     /// Dibuja un fotograma. Los formatos de los arrays: ver docs/FASE1.md.

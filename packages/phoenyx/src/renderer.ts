@@ -4,9 +4,15 @@ import { UniformsLib } from './three/renderers/shaders/UniformsLib.js';
 import init, { create } from '../pkg/phoenyx_gl.js';
 import { Packer } from './pack';
 import { TextureCache } from './textures';
+import { passShaderOf, blendOf } from './passes';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
 import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace } from './three/constants.js';
+
+const warned = new Set<string>();
+const warnOnce = (k: string, msg: string) => {
+  if (!warned.has(k)) (warned.add(k), console.warn('[phoenyx] ' + msg));
+};
 
 /** Si el anfitrion no sirve el wasm junto al modulo, define `globalThis.PHOENYX_WASM_URL` antes de crear el renderer. */
 const wasmUrl = () => (globalThis as any).PHOENYX_WASM_URL;
@@ -216,8 +222,27 @@ export class WebGLRenderer {
     return rec.id;
   }
 
+  /** Ejecuta un ShaderMaterial de pantalla completa (lo que dibuja FullScreenQuad de los pases) con su WGSL portado. */
+  private renderPass(m: any) {
+    this.syncTarget();
+    const def = passShaderOf(m);
+    if (!def) {
+      warnOnce('pass:' + (m.name || m.uuid), 'ShaderMaterial de pase sin version WGSL: se copia la entrada');
+      const src = m.uniforms.tDiffuse?.value;
+      if (src) this.gl.pass(0, new Float32Array([1]), new Uint32Array([0, 201, 200, 100, 201, 200, 100]), new Uint32Array([this.textures.idOf(src)]));
+      return;
+    }
+    const tex = def.tex.map((n) => this.textures.idOf(m.uniforms[n]?.value));
+    while (tex.length < 4) tex.push(0);
+    tex.push(def.depth ? this.textures.idOf(m.uniforms[def.depth]?.value) : 0);
+    this.gl.pass(def.id, new Float32Array(def.pack(m)), new Uint32Array(blendOf(m)), new Uint32Array(tex));
+    const err = this.gl.take_error();
+    if (err) console.error('[phoenyx] GPU:', err);
+  }
+
   render(scene: any, camera: any) {
     if (!this.gl) return;
+    if (scene.isMesh && scene.material?.isShaderMaterial) return this.renderPass(scene.material);
     if (this.gl.is_lost()) {
       if (!this.lostReported) (this.lostReported = true), console.error('[phoenyx] dispositivo GPU perdido:', this.gl.take_error());
       return;

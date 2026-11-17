@@ -74,6 +74,7 @@ export * from './three/materials/ShaderMaterial.js';
 export * from './three/materials/MeshNormalMaterial.js';
 export * from './three/renderers/WebGLRenderTarget.js';
 export * from './three/core/RenderTarget.js';
+export * from './three/renderers/shaders/UniformsUtils.js';
 export * from './three/lights/AmbientLight.js';
 export * from './three/lights/DirectionalLight.js';
 export * from './three/lights/DirectionalLightShadow.js';

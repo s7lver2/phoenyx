@@ -16,5 +16,6 @@
   { "id": "interior", "query": "renderer=@R&scene=interior", "advance": 2, "nota": "linterna con sombra sobre modelos del juego" },
   { "id": "piscina-sol", "query": "renderer=@R&scene=piscina-sol", "advance": 2, "nota": "sol con sombra sobre modelos e instancias" },
   { "id": "rt", "query": "renderer=@R&scene=rt", "advance": 2, "nota": "escena dibujada a render targets (HalfFloat y 8 bits) usados como map" },
+  { "id": "composer", "query": "renderer=@R&scene=composer", "advance": 2, "nota": "EffectComposer: RenderPass + CopyShader (insertPass/removePass en caliente)" },
   { "id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces" }
 ]

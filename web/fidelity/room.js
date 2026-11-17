@@ -2,6 +2,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
 const q = new URLSearchParams(location.search);
@@ -461,6 +465,21 @@ if (sceneId === 'rt') {
     renderer.setRenderTarget(null);
     renderer.render(scene, camera);
   };
+}
+
+// ---- escena 'composer': EffectComposer con RenderPass y ShaderPass(CopyShader); un pase insertado y quitado en caliente ----
+if (sceneId === 'composer') {
+  const composer = new EffectComposer(renderer);
+  composer.setPixelRatio(1);
+  composer.setSize(1280, 720);
+  composer.addPass(new RenderPass(scene, camera));
+  const tmp = new ShaderPass(CopyShader);
+  composer.insertPass(tmp, 1);
+  composer.removePass(tmp);
+  const copy = new ShaderPass(CopyShader);
+  copy.uniforms.opacity.value = 0.8;
+  composer.addPass(copy);
+  draw = () => composer.render(0);
 }
 
 // contrato de tools/fidelity/capture.mjs

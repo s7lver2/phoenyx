@@ -2,3 +2,4 @@
 // @ts-nocheck (el codigo copiado de three es JS con JSDoc)
 export * from './three-exports';
 export { WebGLRenderer } from './renderer';
+import './post-shaders';
