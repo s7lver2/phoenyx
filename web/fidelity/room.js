@@ -13,11 +13,15 @@ renderer.setPixelRatio(1);
 renderer.setSize(1280, 720);
 renderer.domElement.className = 'br-gl';
 document.body.style.margin = '0';
+document.body.style.overflow = 'hidden';
+renderer.domElement.style.display = 'block';
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-if (sceneId === 'exp') scene.fog = new THREE.FogExp2(0x15120a, 0.07);
-else if (sceneId === 'lineal') scene.fog = new THREE.Fog(0x15120a, 3, 25);
+// niebla: por la escena (exp, lineal) o con ?fog=exp|lineal (para las escenas basic)
+const fogMode = q.get('fog') ?? (sceneId === 'exp' || sceneId === 'lineal' ? sceneId : 'none');
+if (fogMode === 'exp') scene.fog = new THREE.FogExp2(0x15120a, 0.07);
+else if (fogMode === 'lineal') scene.fog = new THREE.Fog(0x15120a, 3, 25);
 scene.background = new THREE.Color(0x15120a);
 
 const camera = new THREE.PerspectiveCamera(75, 1280 / 720, 0.1, 100);

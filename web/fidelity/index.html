@@ -6,6 +6,7 @@
   // ?renderer=three|phoenyx elige el empaquetado de room.js
   const r = new URLSearchParams(location.search).get('renderer') === 'phoenyx' ? 'phoenyx' : 'three';
   const s = document.createElement('script');
+  window.PHOENYX_WASM_URL = 'dist/phoenyx_gl_bg.wasm';
   s.type = 'module';
   s.src = `dist/${r}.js`;
   document.body.appendChild(s);

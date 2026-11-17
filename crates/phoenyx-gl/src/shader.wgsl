@@ -6,7 +6,7 @@ struct Globals {
     proj: mat4x4<f32>,
     cam: vec4<f32>,      // xyz posicion de la camara, w exposicion del tone mapping
     p0: vec4<f32>,       // x modo de tone mapping (0 ninguno, 1 ACES), y modo de niebla (0 ninguna, 1 lineal, 2 exp2), z near, w far
-    fogc: vec4<f32>,     // rgb color de la niebla (lineal, tal cual la guarda three), w densidad
+    fogc: vec4<f32>,     // rgb color de la niebla (en el espacio de salida, como refreshFogUniforms), w densidad
     clear: vec4<f32>,    // color de fondo (lo usa el anfitrion Rust)
     dim: vec4<f32>,      // x ancho, y alto, z numero de luces
     amb: vec4<f32>,      // rgb luz ambiente (suma de AmbientLight * intensidad)
@@ -102,7 +102,7 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     }
     // colorspace_fragment (salida sRGB)
     rgb = sRGBTransferOETF(rgb);
-    // fog_fragment: se mezcla despues de codificar, con el color de la niebla tal cual (igual que three)
+    // fog_fragment: se mezcla despues de codificar, con el color de la niebla ya en el espacio de salida
     if (m.misc.z > 0.5 && g.p0.y > 0.5) {
         let depth = -in.vpos.z;
         var f: f32;
