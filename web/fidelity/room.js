@@ -5,6 +5,7 @@ import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLigh
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -489,6 +490,25 @@ if (sceneId === 'composer-out') {
   composer.setPixelRatio(1);
   composer.setSize(1280, 720);
   composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new OutputPass());
+  draw = () => composer.render(0);
+}
+
+// ---- escena 'bloom': fluorescentes de las Poolrooms (emisivos fuertes) con RenderPass -> UnrealBloomPass -> OutputPass ----
+if (sceneId === 'bloom' || sceneId === 'bloom-fuerte' || sceneId === 'bloom-cero') {
+  const tubes = new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 6, 5.2) });
+  [-2, 0, 2].forEach((x) => {
+    const t = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.08, 1.8), tubes);
+    t.position.set(x * 1.5, 2.35, -1.5);
+    scene.add(t);
+  });
+  const composer = new EffectComposer(renderer);
+  composer.setPixelRatio(1);
+  composer.setSize(1280, 720);
+  composer.addPass(new RenderPass(scene, camera));
+  const hotel = sceneId === 'bloom-fuerte';
+  const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), sceneId === 'bloom-cero' ? 0 : hotel ? 0.62 : 0.55, 0.6, hotel ? 0.9 : 0.92);
+  composer.addPass(bloom);
   composer.addPass(new OutputPass());
   draw = () => composer.render(0);
 }

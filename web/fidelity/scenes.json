@@ -18,5 +18,8 @@
   { "id": "rt", "query": "renderer=@R&scene=rt", "advance": 2, "nota": "escena dibujada a render targets (HalfFloat y 8 bits) usados como map" },
   { "id": "composer", "query": "renderer=@R&scene=composer", "advance": 2, "nota": "EffectComposer: RenderPass + CopyShader (insertPass/removePass en caliente)" },
   { "id": "composer-out", "query": "renderer=@R&scene=composer-out&fog=exp", "advance": 2, "nota": "RenderPass + OutputPass: tone mapping ACES y sRGB en el composer" },
+  { "id": "bloom", "query": "renderer=@R&scene=bloom&fog=exp", "advance": 2, "nota": "fluorescentes con UnrealBloomPass (valores del juego)" },
+  { "id": "bloom-fuerte", "query": "renderer=@R&scene=bloom-fuerte&fog=exp", "advance": 2, "nota": "bloom del hotel: strength 0.62, threshold 0.9" },
+  { "id": "bloom-cero", "query": "renderer=@R&scene=bloom-cero&fog=exp", "advance": 2, "nota": "bloom con strength 0: no cambia la imagen" },
   { "id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces" }
 ]

@@ -233,7 +233,7 @@ export class WebGLRenderer {
       return;
     }
     const tex = def.tex.map((n) => this.textures.idOf(m.uniforms[n]?.value));
-    while (tex.length < 4) tex.push(0);
+    while (tex.length < 5) tex.push(0);
     tex.push(def.depth ? this.textures.idOf(m.uniforms[def.depth]?.value) : 0);
     this.gl.pass(def.id, new Float32Array(def.pack(m)), new Uint32Array(blendOf(m)), new Uint32Array(tex));
     const err = this.gl.take_error();
@@ -243,6 +243,12 @@ export class WebGLRenderer {
   render(scene: any, camera: any) {
     if (!this.gl) return;
     if (scene.isMesh && scene.material?.isShaderMaterial) return this.renderPass(scene.material);
+    // pase que copia una textura con MeshBasicMaterial (UnrealBloomPass.renderToScreen)
+    if (scene.isMesh && scene.material?.isMeshBasicMaterial && scene.material.map && !scene.geometry.index && scene.geometry.attributes.position.count === 3) {
+      this.syncTarget();
+      this.gl.pass(0, new Float32Array([1]), new Uint32Array([0, 201, 200, 100, 201, 200, 100]), new Uint32Array([this.textures.idOf(scene.material.map)]));
+      return;
+    }
     if (this.gl.is_lost()) {
       if (!this.lostReported) (this.lostReported = true), console.error('[phoenyx] dispositivo GPU perdido:', this.gl.take_error());
       return;

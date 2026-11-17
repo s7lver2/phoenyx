@@ -429,9 +429,10 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
             ptex(2, true),
             ptex(3, true),
             ptex(4, true),
-            ptex(5, false),
-            psamp(6),
+            ptex(5, true),
+            ptex(6, false),
             psamp(7),
+            psamp(8),
         ],
     });
     let post_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&post_bgl)], immediate_size: 0 });
@@ -926,11 +927,14 @@ impl Gl {
 
     /// Un pase de pantalla completa sobre el destino actual (`set_target`). `shader` es el indice del fragment en
     /// `post.wgsl` (ver pass-registry.ts); `blend` = [modo (0 sin mezcla), srcRGB, dstRGB, ecuacion, srcA, dstA, ecuacionA]
-    /// con las constantes de three; `tex`: ids de las 4 texturas filtrables y de la de profundidad (0 = blanca).
+    /// con las constantes de three; `tex`: ids de las 5 texturas filtrables y de la de profundidad (0 = blanca).
     pub fn pass(&mut self, shader: u32, uniforms: &[f32], blend: &[u32], tex: &[u32]) -> bool {
         let entry = match shader {
             0 => "fs_copy",
             1 => "fs_output",
+            2 => "fs_lum",
+            3 => "fs_blur",
+            4 => "fs_bloom",
             _ => return false,
         };
         let mut bl = [0u32; 7];
@@ -980,8 +984,9 @@ impl Gl {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(view_of(2)) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(view_of(3)) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(view_of(4)) },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.samp_linear) },
-                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.samp_nearest) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(view_of(5)) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.samp_linear) },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Sampler(&self.samp_nearest) },
             ],
         });
         let (view, _frame) = match self.targets.get(&self.cur) {

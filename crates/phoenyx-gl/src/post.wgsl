@@ -7,10 +7,11 @@
 @group(0) @binding(2) var t1: texture_2d<f32>;
 @group(0) @binding(3) var t2: texture_2d<f32>;
 @group(0) @binding(4) var t3: texture_2d<f32>;
+@group(0) @binding(5) var t4: texture_2d<f32>;
 // profundidad u otra textura sin filtrado: se lee con textureLoad
-@group(0) @binding(5) var td: texture_2d<f32>;
-@group(0) @binding(6) var sl: sampler; // lineal, clamp
-@group(0) @binding(7) var sn: sampler; // nearest, clamp
+@group(0) @binding(6) var td: texture_2d<f32>;
+@group(0) @binding(7) var sl: sampler; // lineal, clamp
+@group(0) @binding(8) var sn: sampler; // nearest, clamp
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -103,4 +104,60 @@ fn fs_output(in: VOut) -> @location(0) vec4<f32> {
         c = vec4<f32>(sRGBTransferOETF(c.rgb), c.a);
     }
     return c;
+}
+
+// ---- LuminosityHighPassShader ----  u[0] = (luminosityThreshold, smoothWidth, defaultOpacity, 0), u[1].rgb = defaultColor
+@fragment
+fn fs_lum(in: VOut) -> @location(0) vec4<f32> {
+    let texel = textureSample(t0, sl, in.vuv);
+    let luma = vec3<f32>(0.299, 0.587, 0.114);
+    let v = dot(texel.xyz, luma);
+    let outputColor = vec4<f32>(u[1].rgb, u[0].z);
+    let alpha = smoothstep(u[0].x, u[0].x + u[0].y, v);
+    return mix(outputColor, texel, alpha);
+}
+
+// ---- UnrealBloomPass: blur gaussiano separable ----
+// u[0] = (invSize.x, invSize.y, direction.x, direction.y), u[1].x = KERNEL_RADIUS, u[2..4] = gaussianCoefficients[0..11]
+fn coef(i: u32) -> f32 {
+    return u[2u + i / 4u][i % 4u];
+}
+
+@fragment
+fn fs_blur(in: VOut) -> @location(0) vec4<f32> {
+    let invSize = u[0].xy;
+    let direction = u[0].zw;
+    let kr = i32(u[1].x);
+    var weightSum = coef(0u);
+    var diffuseSum = textureSampleLevel(t0, sl, in.vuv, 0.0).rgb * weightSum;
+    for (var i = 1; i < kr; i = i + 1) {
+        let x = f32(i);
+        let w = coef(u32(i));
+        let uvOffset = direction * invSize * x;
+        let sample1 = textureSampleLevel(t0, sl, in.vuv + uvOffset, 0.0).rgb;
+        let sample2 = textureSampleLevel(t0, sl, in.vuv - uvOffset, 0.0).rgb;
+        diffuseSum = diffuseSum + (sample1 + sample2) * w;
+        weightSum = weightSum + 2.0 * w;
+    }
+    return vec4<f32>(diffuseSum / weightSum, 1.0);
+}
+
+// ---- UnrealBloomPass: composicion de los mips ----
+// u[0] = (bloomStrength, bloomRadius, 0, 0), u[1..2] = bloomFactors[0..4], u[3..7].rgb = bloomTintColors[0..4]
+fn lerpBloomFactor(factor: f32) -> f32 {
+    let mirrorFactor = 1.2 - factor;
+    return mix(factor, mirrorFactor, u[0].y);
+}
+
+fn bloomFactor(i: u32) -> f32 {
+    return u[1u + i / 4u][i % 4u];
+}
+
+@fragment
+fn fs_bloom(in: VOut) -> @location(0) vec4<f32> {
+    return u[0].x * (lerpBloomFactor(bloomFactor(0u)) * vec4<f32>(u[3].rgb, 1.0) * textureSample(t0, sl, in.vuv) +
+        lerpBloomFactor(bloomFactor(1u)) * vec4<f32>(u[4].rgb, 1.0) * textureSample(t1, sl, in.vuv) +
+        lerpBloomFactor(bloomFactor(2u)) * vec4<f32>(u[5].rgb, 1.0) * textureSample(t2, sl, in.vuv) +
+        lerpBloomFactor(bloomFactor(3u)) * vec4<f32>(u[6].rgb, 1.0) * textureSample(t3, sl, in.vuv) +
+        lerpBloomFactor(bloomFactor(4u)) * vec4<f32>(u[7].rgb, 1.0) * textureSample(t4, sl, in.vuv));
 }
