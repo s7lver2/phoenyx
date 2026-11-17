@@ -44,6 +44,8 @@ struct Light {
 @group(0) @binding(2) var<storage, read> materials: array<Mat>;
 @group(0) @binding(3) var<storage, read> lights: array<Light>;
 @group(0) @binding(4) var<storage, read> draws: array<vec4<u32>>;
+@group(0) @binding(5) var<storage, read> inst_mats: array<mat4x4<f32>>;
+@group(0) @binding(6) var<storage, read> inst_cols: array<vec4<f32>>;
 
 @group(1) @binding(0) var tex_map: texture_2d<f32>;
 @group(1) @binding(1) var tex_normal: texture_2d<f32>;
@@ -74,10 +76,29 @@ struct VOut {
 
 @vertex
 fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec3<f32>, @builtin(instance_index) ii: u32) -> VOut {
-    let d = draws[ii * 2u];
+    // el indice de dibujo va en los 16 bits altos de instance_index y la instancia en los bajos
+    let di = ii >> 16u;
+    let k = ii & 0xFFFFu;
+    let d = draws[di * 3u];
+    let d1 = draws[di * 3u + 1u];
     let o = objects[d.y];
+    var p = vec4<f32>(position, 1.0);
+    var nrm = normal;
+    var icol = vec3<f32>(1.0);
+    if (d1.w != 0xFFFFFFFFu) {
+        // instancing_vertex / defaultnormal_vertex: instanceMatrix antes de la matriz del objeto
+        let im4 = inst_mats[d1.w + k];
+        p = im4 * p;
+        let a0 = im4[0].xyz;
+        let a1 = im4[1].xyz;
+        let a2 = im4[2].xyz;
+        nrm = mat3x3<f32>(a0, a1, a2) * (normal / vec3<f32>(dot(a0, a0), dot(a1, a1), dot(a2, a2)));
+        if ((d.w & 128u) != 0u) {
+            icol = inst_cols[d1.w + k].xyz;
+        }
+    }
     let mv = g.view * o.model;
-    let vp = mv * vec4<f32>(position, 1.0);
+    let vp = mv * p;
     var clip = g.proj * vp;
     // three (WebGL) usa z de clip en [-w, w]; WebGPU, en [0, w]
     clip.z = (clip.z + clip.w) * 0.5;
@@ -86,10 +107,11 @@ fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @locatio
     out.vpos = vp.xyz;
     // FLIP_SIDED (material BackSide): three invierte la normal en el vertex shader
     let flip = select(1.0, -1.0, (d.w & 32u) != 0u);
-    out.vnormal = mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * normal * flip;
+    out.vnormal = mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * nrm * flip;
     out.uv = uv;
-    out.di = ii;
-    out.color = color;
+    out.di = di;
+    // color_vertex: color de vertice (si el material lo pide) por color de instancia
+    out.color = select(vec3<f32>(1.0), color, materials[d.z].misc.w > 0.5) * icol;
     return out;
 }
 
@@ -180,7 +202,7 @@ fn BRDF_Lambert(diffuseColor: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
-    let dr = draws[in.di * 2u];
+    let dr = draws[in.di * 3u];
     let m = materials[dr.z];
     // derivadas antes de cualquier rama (control uniforme)
     let nUn = normalize(in.vnormal);
@@ -214,9 +236,7 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         diffuse = diffuse * sMap.rgb;
         diffuseA = diffuseA * sMap.a;
     }
-    if (m.misc.w > 0.5) {
-        diffuse = diffuse * in.color;
-    }
+    diffuse = diffuse * in.color;
     // alphatest_fragment
     if (m.tp.x > 0.0 && diffuseA < m.tp.x) {
         discard;

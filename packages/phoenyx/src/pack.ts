@@ -73,7 +73,7 @@ export class Packer {
   private transparent: Item[] = [];
   private lights: any[] = [];
 
-  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number): Packed {
+  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null): Packed {
     if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
     if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
     this.projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -134,6 +134,8 @@ export class Packer {
       const gid = geomId(it.geometry);
       const mi = matIndex(m);
       const tk = texKey(m);
+      const ii = o.isInstancedMesh ? instInfo(o) : null;
+      if (o.isInstancedMesh && (!ii || ii.count === 0)) continue;
       // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
       const flip = o.matrixWorld.determinant() < 0;
       const common = (m.transparent ? 4 : 0) | (m.depthWrite !== false && m.depthTest !== false ? 8 : 0) | (m.depthTest !== false ? 16 : 0);
@@ -146,13 +148,25 @@ export class Packer {
       if (idx === 0) continue;
       const bits = (backSide: boolean, double: boolean, normalDouble: boolean) =>
         common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
+      const emit = (fl: number) => {
+        if (!ii) {
+          draws.push(gid, no, mi, fl, first, idx, tk, 0xffffffff, 1, 0, 0, 0);
+          triangles += idx / 3;
+        } else {
+          // una malla con mas de 65535 instancias se parte en varios dibujos (instance_index lleva 16 bits de instancia)
+          for (let s = 0; s < ii.count; s += 65535) {
+            const n = Math.min(65535, ii.count - s);
+            draws.push(gid, no, mi, fl | (ii.color ? 128 : 0), first, idx, tk, ii.id, n, s, 0, 0);
+            triangles += (idx / 3) * n;
+          }
+        }
+      };
       if (m.transparent && m.side === DoubleSide) {
         // transparente de doble cara: primero las traseras (material BackSide), luego las frontales
-        draws.push(gid, no, mi, bits(true, false, false), first, idx, tk, 0, gid, no, mi, bits(false, false, false), first, idx, tk, 0);
-        triangles += (idx / 3) * 2;
+        emit(bits(true, false, false));
+        emit(bits(false, false, false));
       } else {
-        draws.push(gid, no, mi, bits(m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide), first, idx, tk, 0);
-        triangles += idx / 3;
+        emit(bits(m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide));
       }
       no++;
     }
@@ -221,7 +235,7 @@ export class Packer {
       materials: new Float32Array(matData),
       lights: new Float32Array(lightData),
       draws: new Uint32Array(draws),
-      nDraws: draws.length / 8,
+      nDraws: draws.length / 12,
       triangles,
     };
   }
@@ -235,7 +249,7 @@ export class Packer {
         if (object.autoUpdate === true) object.update(camera);
       } else if (object.isLight) this.lights.push(object);
       else if (object.isMesh) {
-        if (object.isSkinnedMesh || object.isInstancedMesh) warnOnce(object.type, `${object.type} aun no esta soportado y se dibuja como Mesh`);
+        if (object.isSkinnedMesh) warnOnce(object.type, `${object.type} aun no esta soportado y se dibuja como Mesh`);
         if (!object.frustumCulled || this.frustum.intersectsObject(object)) {
           // z de ordenacion: centro de la esfera envolvente, como WebGLRenderer.projectObject
           const geo = object.geometry;

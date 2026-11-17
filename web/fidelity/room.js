@@ -211,6 +211,34 @@ if (texScene) {
   vbox.position.set(3.5, 0.4, 3); vbox.rotation.set(0.3, 0.5, 0); scene.add(vbox);
 }
 
+
+if (sceneId === 'inst') {
+  // 20x20 cubos con matriz propia y color por instancia (solo 350 de 400 se dibujan: count a medias)
+  const dummy = new THREE.Object3D();
+  const im = new THREE.InstancedMesh(new THREE.BoxGeometry(0.25, 0.25, 0.25), new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.1 }), 400);
+  const col = new THREE.Color();
+  for (let i = 0; i < 400; i++) {
+    const x = (i % 20) * 0.5 - 4.75, z = Math.floor(i / 20) * 0.5 - 4.75;
+    dummy.position.set(x, 0.15 + 0.2 * Math.abs(Math.sin(i * 0.7)), z);
+    dummy.rotation.set(i * 0.1, i * 0.37, 0);
+    dummy.scale.setScalar(0.6 + 0.8 * ((i * 7) % 10) / 10);
+    dummy.updateMatrix();
+    im.setMatrixAt(i, dummy.matrix);
+    im.setColorAt(i, col.setHSL((i * 0.013) % 1, 0.7, 0.55));
+  }
+  im.count = 350;
+  im.frustumCulled = false;
+  scene.add(im);
+  // otra malla instanciada sin color y transparente, dentro de un grupo desplazado
+  const g2 = new THREE.Group();
+  g2.position.set(1.5, 1.2, -3);
+  g2.rotation.y = 0.4;
+  const im2 = new THREE.InstancedMesh(new THREE.SphereGeometry(0.3, 12, 8), new THREE.MeshStandardMaterial({ color: 0x40a0ff, transparent: true, opacity: 0.6, roughness: 0.3, depthWrite: false }), 5);
+  for (let i = 0; i < 5; i++) { dummy.position.set(i * 0.7 - 1.4, 0, i * 0.3); dummy.rotation.set(0, 0, 0); dummy.scale.setScalar(1); dummy.updateMatrix(); im2.setMatrixAt(i, dummy.matrix); }
+  g2.add(im2);
+  scene.add(g2);
+}
+
 // contrato de tools/fidelity/capture.mjs
 let timer = 0;
 const draw = () => renderer.render(scene, camera);

@@ -5,5 +5,6 @@
   { "id": "sala-basic-exp", "query": "renderer=@R&scene=basic&fog=exp", "advance": 2, "nota": "MeshBasic con FogExp2" },
   { "id": "sala-basic-lineal", "query": "renderer=@R&scene=basic&fog=lineal", "advance": 2, "nota": "MeshBasic con Fog lineal" },
   { "id": "tex", "query": "renderer=@R&scene=tex", "advance": 2, "nota": "texturas de lienzo y datos, emisivo, alphaTest, vertexColors" },
+  { "id": "inst", "query": "renderer=@R&scene=inst", "advance": 2, "nota": "InstancedMesh con color por instancia, count a medias y otra transparente" },
   { "id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces" }
 ]

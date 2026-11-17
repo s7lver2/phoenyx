@@ -37,6 +37,7 @@ export class WebGLRenderer {
   private clearAlpha = 1;
   private ids = new WeakMap<object, { id: number; key: string }>();
   private nextId = 1;
+  private nextInst = 1;
   private attrIds = new WeakMap<object, number>();
   private nextAttr = 1;
   private lostReported = false;
@@ -78,6 +79,36 @@ export class WebGLRenderer {
   setClearColor(color: any, alpha = 1) {
     this.clearColor.set(color);
     this.clearAlpha = alpha;
+  }
+
+  private insts = new WeakMap<object, { id: number; key: string }>();
+
+  /** Sube las matrices y colores de un InstancedMesh cuando cambian (version o count) y devuelve su id. */
+  private instInfo(o: any) {
+    const im = o.instanceMatrix, ic = o.instanceColor;
+    if (!im) return null;
+    const count = Math.min(o.count, im.count);
+    const aid = (a: any) => {
+      let i = this.attrIds.get(a);
+      if (!i) this.attrIds.set(a, (i = this.nextAttr++));
+      return `${i}.${a.version}`;
+    };
+    const key = `${aid(im)}|${ic ? aid(ic) : 0}|${count}`;
+    let rec = this.insts.get(o);
+    if (!rec || rec.key !== key) {
+      if (!rec) {
+        const r = { id: this.nextInst++, key };
+        rec = r;
+        this.insts.set(o, r);
+        o.addEventListener('dispose', () => {
+          this.gl?.drop_instances(r.id);
+          this.insts.delete(o);
+        });
+      }
+      rec.key = key;
+      this.gl.set_instances(rec.id, im.array.subarray(0, count * 16), ic ? ic.array.subarray(0, count * 3) : new Float32Array(0));
+    }
+    return { id: rec.id, count, color: !!ic };
   }
 
   /** Normales de una geometria que no las trae (sin tocar la geometria del juego). */
@@ -146,7 +177,7 @@ export class WebGLRenderer {
     const alpha = scene.background && scene.background.isColor ? 1 : this.clearAlpha;
     const tm = this.toneMapping === ACESFilmicToneMapping ? 1 : 0;
     if (this.toneMapping !== NoToneMapping && !tm) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
-    const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: this.outputColorSpace }, (g) => this.geomId(g), (m) => this.textures.materialKey(m));
+    const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: this.outputColorSpace }, (g) => this.geomId(g), (m) => this.textures.materialKey(m), (o) => this.instInfo(o));
     this.gl.frame(p.globals, p.objects, p.materials, p.lights, p.draws);
     const err = this.gl.take_error();
     if (err) console.error('[phoenyx] GPU:', err);

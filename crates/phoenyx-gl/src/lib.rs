@@ -56,6 +56,12 @@ fn err<E: std::fmt::Display>(e: E) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 
+struct Slot {
+    offset: u32,
+    cap: u32,
+    n: u32,
+}
+
 struct Geom {
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
@@ -76,7 +82,7 @@ impl Growable {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: cap,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         })
     }
@@ -118,6 +124,10 @@ pub struct Gl {
     materials: Growable,
     lights: Growable,
     draws: Growable,
+    inst_mats: Growable,
+    inst_cols: Growable,
+    slots: HashMap<u32, Slot>,
+    inst_next: u32,
     bg: Option<wgpu::BindGroup>,
     pipelines: HashMap<u32, wgpu::RenderPipeline>,
     geoms: HashMap<u32, Geom>,
@@ -191,6 +201,8 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
             st(2, ro, both),
             st(3, ro, both),
             st(4, ro, both),
+            st(5, ro, both),
+            st(6, ro, both),
         ],
     });
     let tex_entry = |b: u32| wgpu::BindGroupLayoutEntry {
@@ -265,6 +277,10 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         materials: Growable::new(&device, 1024),
         lights: Growable::new(&device, 1024),
         draws: Growable::new(&device, 1024),
+        inst_mats: Growable::new(&device, 4096),
+        inst_cols: Growable::new(&device, 1024),
+        slots: HashMap::new(),
+        inst_next: 0,
         device,
         queue,
         surface,
@@ -421,6 +437,68 @@ impl Gl {
         self.bgs.insert(key, bg);
     }
 
+    /// Sube las matrices (16 floats) y los colores (3 floats, opcionales) de un `InstancedMesh` a la reserva de instancias.
+    pub fn set_instances(&mut self, mesh: u32, matrices: &[f32], colors: &[f32]) {
+        let n = (matrices.len() / 16) as u32;
+        let fits = self.slots.get(&mesh).is_some_and(|s| s.cap >= n);
+        if !fits {
+            // se reserva al final (la plaza vieja se libera si era la ultima); crecer la reserva copia lo que ya habia
+            if let Some(old) = self.slots.remove(&mesh) {
+                if old.offset + old.cap == self.inst_next {
+                    self.inst_next = old.offset;
+                }
+            }
+            let cap = n.max(16).next_power_of_two();
+            let offset = self.inst_next;
+            self.inst_next += cap;
+            self.grow_instances(self.inst_next);
+            self.slots.insert(mesh, Slot { offset, cap, n });
+        }
+        let slot = self.slots.get_mut(&mesh).unwrap();
+        slot.n = n;
+        let offset = slot.offset;
+        self.queue.write_buffer(&self.inst_mats.buf, offset as u64 * 64, bytemuck::cast_slice(&matrices[..(n * 16) as usize]));
+        if colors.len() >= (n * 3) as usize {
+            let mut padded = Vec::with_capacity(n as usize * 4);
+            for c in colors.chunks_exact(3).take(n as usize) {
+                padded.extend_from_slice(&[c[0], c[1], c[2], 1.0]);
+            }
+            self.queue.write_buffer(&self.inst_cols.buf, offset as u64 * 16, bytemuck::cast_slice(&padded));
+        }
+    }
+
+    pub fn drop_instances(&mut self, mesh: u32) {
+        if let Some(old) = self.slots.remove(&mesh) {
+            if old.offset + old.cap == self.inst_next {
+                self.inst_next = old.offset;
+            }
+        }
+    }
+
+    /// Hace sitio para `total` instancias en los dos buffers de la reserva, copiando el contenido anterior.
+    fn grow_instances(&mut self, total: u32) {
+        let need_m = total as u64 * 64;
+        let need_c = total as u64 * 16;
+        if need_m <= self.inst_mats.cap && need_c <= self.inst_cols.cap {
+            return;
+        }
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        if need_m > self.inst_mats.cap {
+            let cap = need_m.next_power_of_two();
+            let nb = Growable::make(&self.device, cap);
+            enc.copy_buffer_to_buffer(&self.inst_mats.buf, 0, &nb, 0, self.inst_mats.cap);
+            self.inst_mats = Growable { buf: nb, cap };
+        }
+        if need_c > self.inst_cols.cap {
+            let cap = need_c.next_power_of_two();
+            let nb = Growable::make(&self.device, cap);
+            enc.copy_buffer_to_buffer(&self.inst_cols.buf, 0, &nb, 0, self.inst_cols.cap);
+            self.inst_cols = Growable { buf: nb, cap };
+        }
+        self.queue.submit([enc.finish()]);
+        self.bg = None;
+    }
+
     pub fn drop_geometry(&mut self, id: u32) {
         self.geoms.remove(&id);
     }
@@ -506,7 +584,7 @@ impl Gl {
     }
 
     /// Dibuja un fotograma. Los formatos de los arrays: ver docs/FASE1.md.
-    /// `draws`: 8 u32 por dibujo `[geometria, objeto, material, flags, primer indice, n indices, clave de texturas, 0]`, ya en el orden final de pintado.
+    /// `draws`: 12 u32 por dibujo `[geometria, objeto, material, flags, primer indice, n indices, clave de texturas, malla instanciada (u32::MAX si no), n instancias, primera instancia, 0, 0]`, ya en el orden final de pintado.
     pub fn frame(&mut self, globals: &[f32], objects: &[f32], materials: &[f32], lights: &[f32], draws: &[u32]) {
         if globals.len() < GLOBALS_F {
             return;
@@ -516,6 +594,20 @@ impl Gl {
         let mut grew = self.objects.write(&self.device, &self.queue, bytemuck::cast_slice(objects));
         grew |= self.materials.write(&self.device, &self.queue, bytemuck::cast_slice(materials));
         grew |= self.lights.write(&self.device, &self.queue, bytemuck::cast_slice(lights));
+        // la malla instanciada se resuelve a su plaza de la reserva; el indice de dibujo va en los 16 bits altos de la instancia
+        let mut dr = draws.to_vec();
+        for c in dr.chunks_exact_mut(12) {
+            if c[7] != u32::MAX {
+                match self.slots.get(&c[7]) {
+                    Some(sl) => {
+                        c[7] = sl.offset + c[9];
+                        c[8] = c[8].min(sl.n.saturating_sub(c[9]));
+                    }
+                    None => c[8] = 0,
+                }
+            }
+        }
+        let draws = &dr[..];
         grew |= self.draws.write(&self.device, &self.queue, bytemuck::cast_slice(draws));
         if grew || self.bg.is_none() {
             self.bg = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -527,10 +619,12 @@ impl Gl {
                     entry(2, &self.materials.buf),
                     entry(3, &self.lights.buf),
                     entry(4, &self.draws.buf),
+                    entry(5, &self.inst_mats.buf),
+                    entry(6, &self.inst_cols.buf),
                 ],
             }));
         }
-        for d in draws.chunks_exact(8) {
+        for d in draws.chunks_exact(12) {
             self.ensure_pipeline(d[3]);
             self.ensure_tex_bg(d[6]);
         }
@@ -565,8 +659,11 @@ impl Gl {
             });
             p.set_bind_group(0, self.bg.as_ref(), &[]);
             let mut last_key = u32::MAX;
-            for (i, d) in draws.chunks_exact(8).enumerate() {
+            for (i, d) in draws.chunks_exact(12).enumerate() {
                 let Some(g) = self.geoms.get(&d[0]) else { continue };
+                if d[8] == 0 || i >= 65536 {
+                    continue;
+                }
                 p.set_pipeline(&self.pipelines[&(d[3] & 31)]);
                 if d[6] != last_key {
                     p.set_bind_group(1, &self.bgs[&d[6]], &[]);
@@ -575,11 +672,12 @@ impl Gl {
                 p.set_vertex_buffer(0, g.vb.slice(..));
                 p.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
                 let (first, n) = (d[4].min(g.n), d[5].min(g.n.saturating_sub(d[4].min(g.n))));
-                p.draw_indexed(first..first + n, 0, i as u32..i as u32 + 1);
-                tris += (n / 3) as u64;
+                let base = (i as u32) << 16;
+                p.draw_indexed(first..first + n, 0, base..base + d[8]);
+                tris += (n / 3) as u64 * d[8] as u64;
             }
         }
         self.queue.submit([enc.finish()]);
-        self.stats = [(draws.len() / 8) as f32, tris as f32, 0.0];
+        self.stats = [(draws.len() / 12) as f32, tris as f32, 0.0];
     }
 }
