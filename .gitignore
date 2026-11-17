@@ -9,3 +9,4 @@ tools/fidelity/node_modules/
 fidelity/out/
 fidelity/baseline/*/*.png
 fidelity/baseline/*/*-diff.png
+packages/phoenyx/pkg/
