@@ -6,6 +6,8 @@ import { OutputShader } from './jsm/shaders/OutputShader.js';
 import { LuminosityHighPassShader } from './jsm/shaders/LuminosityHighPassShader.js';
 import { UnrealBloomPass } from './jsm/postprocessing/UnrealBloomPass.js';
 import { Vector2 } from 'three';
+import { GTAOShader, GTAODepthShader, GTAOBlendShader } from './jsm/shaders/GTAOShader.js';
+import { PoissonDenoiseShader } from './jsm/shaders/PoissonDenoiseShader.js';
 import { registerPassShader } from './passes';
 
 // id 0: fs_copy
@@ -57,6 +59,45 @@ registerPassShader(bloom.compositeMaterial.fragmentShader, {
   },
 });
 bloom.dispose();
+
+// ids 8 a 11: GTAOPass (oclusion ambiental, denoise de Poisson, profundidad lineal y mezcla multiplicativa)
+registerPassShader(GTAOShader.fragmentShader, {
+  id: 8,
+  tex: ['tNormal', 'tNoise'],
+  depth: 'tDepth',
+  pack: (m) => {
+    const u = m.uniforms, d = m.defines ?? {};
+    if (d.DEPTH_SWIZZLING === 'w') console.warn('[phoenyx] GTAOPass con la profundidad en el canal w no esta soportado');
+    const out = [u.resolution.value.x, u.resolution.value.y, u.cameraNear.value, u.cameraFar.value, u.radius.value, u.distanceExponent.value, u.thickness.value, u.distanceFallOff.value];
+    out.push(u.scale.value, d.SAMPLES, d.NORMAL_VECTOR_TYPE, (d.SCREEN_SPACE_RADIUS === 1 ? 1 : 0) | (d.SCENE_CLIP_BOX === 1 ? 2 : 0));
+    out.push(d.SCREEN_SPACE_RADIUS_SCALE ?? 100, 0, 0, 0);
+    const a = u.sceneBoxMin.value, b = u.sceneBoxMax.value;
+    out.push(a.x, a.y, a.z, 0, b.x, b.y, b.z, 0);
+    out.push(...u.cameraProjectionMatrix.value.elements, ...u.cameraProjectionMatrixInverse.value.elements, ...u.cameraWorldMatrix.value.elements);
+    return out;
+  },
+});
+registerPassShader(PoissonDenoiseShader.fragmentShader, {
+  id: 9,
+  tex: ['tDiffuse', 'tNormal', 'tNoise'],
+  depth: 'tDepth',
+  pack: (m) => {
+    const u = m.uniforms, d = m.defines ?? {};
+    if (d.DEPTH_VALUE_SOURCE === 1) console.warn('[phoenyx] PoissonDenoiseShader con la profundidad en alfa no esta soportado');
+    const out = [u.resolution.value.x, u.resolution.value.y, u.lumaPhi.value, u.depthPhi.value, u.normalPhi.value, u.radius.value, u.index.value, d.SAMPLES, d.NORMAL_VECTOR_TYPE, 0, 0, 0];
+    out.push(...u.cameraProjectionMatrixInverse.value.elements);
+    // los puntos del disco llegan como texto GLSL (vec3[SAMPLES](vec3(x, y, r),...))
+    for (const s of String(d.SAMPLE_VECTORS).matchAll(/vec3\(([^,]+),([^,]+),([^)]+)\)/g)) out.push(parseFloat(s[1]), parseFloat(s[2]), parseFloat(s[3]), 0);
+    return out;
+  },
+});
+registerPassShader(GTAODepthShader.fragmentShader, {
+  id: 11,
+  tex: [],
+  depth: 'tDepth',
+  pack: (m) => [m.uniforms.cameraNear.value, m.uniforms.cameraFar.value, m.defines.PERSPECTIVE_CAMERA === 1 ? 1 : 0, 0],
+});
+registerPassShader(GTAOBlendShader.fragmentShader, { id: 10, tex: ['tDiffuse'], pack: (m) => [m.uniforms.intensity.value] });
 
 // ids 5 a 7: SMAAPass (bordes, pesos y mezcla); la resolucion es 1/ancho, 1/alto
 registerPassShader(SMAAEdgesShader.fragmentShader, {

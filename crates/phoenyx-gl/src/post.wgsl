@@ -380,3 +380,255 @@ fn fs_smaa_blend(in: VOut) -> @location(0) vec4<f32> {
         return mixed;
     }
 }
+
+// ---- GTAOPass: GTAOShader, PoissonDenoiseShader, GTAODepthShader y GTAOBlendShader ----
+const PI_F = 3.141592653589793;
+
+fn g_mat(i: u32) -> mat4x4<f32> {
+    return mat4x4<f32>(u[i], u[i + 1u], u[i + 2u], u[i + 3u]);
+}
+
+fn g_view_pos(uv: vec2<f32>, depth: f32, projInv: mat4x4<f32>) -> vec3<f32> {
+    let clip = vec4<f32>(vec3<f32>(uv, depth) * 2.0 - 1.0, 1.0);
+    let v = projInv * clip;
+    return v.xyz / v.w;
+}
+
+// textureLod con filtro nearest y clamp-to-edge (profundidad y normales de three)
+fn nload(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let sz = vec2<f32>(textureDimensions(t));
+    let p = clamp(vec2<i32>(floor(uv * sz)), vec2<i32>(0), vec2<i32>(sz) - vec2<i32>(1));
+    return textureLoad(t, p, 0);
+}
+
+// textureLod con filtro nearest y RepeatWrapping (ruido)
+fn wload(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let d = vec2<i32>(textureDimensions(t));
+    let p = vec2<i32>(floor(uv * vec2<f32>(d)));
+    return textureLoad(t, ((p % d) + d) % d, 0);
+}
+
+fn g_depth(uv: vec2<f32>) -> f32 {
+    return nload(td, uv).x;
+}
+
+fn g_fetch_depth(p: vec2<i32>) -> f32 {
+    return textureLoad(td, p, 0).x;
+}
+
+fn g_normal_from_depth(uv: vec2<f32>, projInv: mat4x4<f32>) -> vec3<f32> {
+    let size = vec2<f32>(textureDimensions(td));
+    let p = vec2<i32>(uv * size);
+    let c0 = g_fetch_depth(p);
+    let l2 = g_fetch_depth(p - vec2<i32>(2, 0));
+    let l1 = g_fetch_depth(p - vec2<i32>(1, 0));
+    let r1 = g_fetch_depth(p + vec2<i32>(1, 0));
+    let r2 = g_fetch_depth(p + vec2<i32>(2, 0));
+    let b2 = g_fetch_depth(p - vec2<i32>(0, 2));
+    let b1 = g_fetch_depth(p - vec2<i32>(0, 1));
+    let t1 = g_fetch_depth(p + vec2<i32>(0, 1));
+    let t2 = g_fetch_depth(p + vec2<i32>(0, 2));
+    let dl = abs((2.0 * l1 - l2) - c0);
+    let dr = abs((2.0 * r1 - r2) - c0);
+    let db = abs((2.0 * b1 - b2) - c0);
+    let dt = abs((2.0 * t1 - t2) - c0);
+    let ce = g_view_pos(uv, c0, projInv);
+    var dpdx: vec3<f32>;
+    if (dl < dr) {
+        dpdx = ce - g_view_pos(uv - vec2<f32>(1.0 / size.x, 0.0), l1, projInv);
+    } else {
+        dpdx = -ce + g_view_pos(uv + vec2<f32>(1.0 / size.x, 0.0), r1, projInv);
+    }
+    var dpdy: vec3<f32>;
+    if (db < dt) {
+        dpdy = ce - g_view_pos(uv - vec2<f32>(0.0, 1.0 / size.y), b1, projInv);
+    } else {
+        dpdy = -ce + g_view_pos(uv + vec2<f32>(0.0, 1.0 / size.y), t1, projInv);
+    }
+    return normalize(cross(dpdx, dpdy));
+}
+
+// tipo 2: normal tal cual; tipo 1: normal empaquetada en RGB (unpackRGBToNormal); resto: a partir de la profundidad
+fn g_view_normal(nt: texture_2d<f32>, uv: vec2<f32>, ntype: i32, projInv: mat4x4<f32>) -> vec3<f32> {
+    if (ntype == 2) {
+        return normalize(nload(nt, uv).rgb);
+    } else if (ntype == 1) {
+        return 2.0 * nload(nt, uv).rgb - 1.0;
+    }
+    return g_normal_from_depth(uv, projInv);
+}
+
+fn g_scene_uv_depth(p: vec3<f32>, projM: mat4x4<f32>) -> vec3<f32> {
+    let c = projM * vec4<f32>(p, 1.0);
+    let suv = c.xy / c.w * 0.5 + 0.5;
+    return vec3<f32>(suv, g_depth(suv));
+}
+
+// GTAOShader. u[0] = (resolution, near, far), u[1] = (radius, distanceExponent, thickness, distanceFallOff),
+// u[2] = (scale, SAMPLES, NORMAL_VECTOR_TYPE, flags: 1 SCREEN_SPACE_RADIUS, 2 SCENE_CLIP_BOX), u[3].x = SCREEN_SPACE_RADIUS_SCALE,
+// u[4].xyz = sceneBoxMin, u[5].xyz = sceneBoxMax, u[6..9] = cameraProjectionMatrix, u[10..13] = su inversa, u[14..17] = cameraWorldMatrix.
+// t0 = tNormal, t1 = tNoise, td = tDepth
+@fragment
+fn fs_gtao(in: VOut) -> @location(0) vec4<f32> {
+    let vUv = in.vuv;
+    let resolution = u[0].xy;
+    let distanceExponent = u[1].y;
+    let thickness = u[1].z;
+    let distanceFallOff = u[1].w;
+    let scale = u[2].x;
+    let samples = i32(u[2].y);
+    let ntype = i32(u[2].z);
+    let flags = u32(u[2].w);
+    let projM = g_mat(6u);
+    let projInv = g_mat(10u);
+    let worldM = g_mat(14u);
+    let depth = g_depth(vUv);
+    if (depth >= 1.0) {
+        discard;
+    }
+    let viewPos = g_view_pos(vUv, depth, projInv);
+    let viewNormal = g_view_normal(t0, vUv, ntype, projInv);
+    var radiusToUse = u[1].x;
+    if ((flags & 1u) != 0u) {
+        let radiusScale = g_view_pos(vec2<f32>(0.5 + u[3].x / resolution.x, 0.0), depth, projInv).x;
+        radiusToUse = radiusToUse * radiusScale;
+    }
+    var boxDistance = 0.0;
+    if ((flags & 2u) != 0u) {
+        let worldPos = (worldM * vec4<f32>(viewPos, 1.0)).xyz;
+        boxDistance = length(max(vec3<f32>(0.0), max(u[4].xyz - worldPos, worldPos - u[5].xyz)));
+        if (boxDistance > radiusToUse) {
+            discard;
+        }
+    }
+    let noiseResolution = vec2<f32>(textureDimensions(t1));
+    let noiseUv = vUv * resolution / noiseResolution;
+    let noiseTexel = wload(t1, noiseUv);
+    let randomVec = noiseTexel.xyz * 2.0 - 1.0;
+    let tangent = normalize(vec3<f32>(randomVec.xy, 0.0));
+    let bitangent = vec3<f32>(-tangent.y, tangent.x, 0.0);
+    let kernelMatrix = mat3x3<f32>(tangent, bitangent, vec3<f32>(0.0, 0.0, 1.0));
+    let directions = select(5, 3, samples < 30);
+    let steps = (samples + directions - 1) / directions;
+    var ao = 0.0;
+    for (var i = 0; i < directions; i = i + 1) {
+        let angle = f32(i) / f32(directions) * PI_F;
+        let sd = vec4<f32>(cos(angle), sin(angle), 0.0, 0.5 + 0.5 * noiseTexel.w);
+        let sampleDir = vec4<f32>(normalize(kernelMatrix * sd.xyz), sd.w);
+        let viewDir = normalize(-viewPos);
+        let sliceBitangent = normalize(cross(sampleDir.xyz, viewDir));
+        let sliceTangent = cross(sliceBitangent, viewDir);
+        let normalInSlice = normalize(viewNormal - sliceBitangent * dot(viewNormal, sliceBitangent));
+        let tangentToNormalInSlice = cross(normalInSlice, sliceBitangent);
+        var cosHorizons = vec2<f32>(dot(viewDir, tangentToNormalInSlice), dot(viewDir, -tangentToNormalInSlice));
+        for (var j = 0; j < steps; j = j + 1) {
+            let sampleViewOffset = sampleDir.xyz * radiusToUse * sampleDir.w * pow(f32(j + 1) / f32(steps), distanceExponent);
+            var sud = g_scene_uv_depth(viewPos + sampleViewOffset, projM);
+            var sampleSceneViewPos = g_view_pos(sud.xy, sud.z, projInv);
+            var viewDelta = sampleSceneViewPos - viewPos;
+            if (abs(viewDelta.z) < thickness) {
+                let sampleCosHorizon = dot(viewDir, normalize(viewDelta));
+                cosHorizons.x = cosHorizons.x + max(0.0, (sampleCosHorizon - cosHorizons.x) * mix(1.0, 2.0 / f32(j + 2), distanceFallOff));
+            }
+            sud = g_scene_uv_depth(viewPos - sampleViewOffset, projM);
+            sampleSceneViewPos = g_view_pos(sud.xy, sud.z, projInv);
+            viewDelta = sampleSceneViewPos - viewPos;
+            if (abs(viewDelta.z) < thickness) {
+                let sampleCosHorizon = dot(viewDir, normalize(viewDelta));
+                cosHorizons.y = cosHorizons.y + max(0.0, (sampleCosHorizon - cosHorizons.y) * mix(1.0, 2.0 / f32(j + 2), distanceFallOff));
+            }
+        }
+        let sinHorizons = sqrt(1.0 - cosHorizons * cosHorizons);
+        let nx = dot(normalInSlice, sliceTangent);
+        let ny = dot(normalInSlice, viewDir);
+        let nxb = 1.0 / 2.0 * (acos(cosHorizons.y) - acos(cosHorizons.x) + sinHorizons.x * cosHorizons.x - sinHorizons.y * cosHorizons.y);
+        let nyb = 1.0 / 2.0 * (2.0 - cosHorizons.x * cosHorizons.x - cosHorizons.y * cosHorizons.y);
+        ao = ao + (nx * nxb + ny * nyb);
+    }
+    ao = clamp(ao / f32(directions), 0.0, 1.0);
+    if ((flags & 2u) != 0u) {
+        ao = mix(ao, 1.0, smoothstep(0.0, radiusToUse, boxDistance));
+    }
+    ao = pow(ao, scale);
+    return vec4<f32>(vec3<f32>(ao), 1.0);
+}
+
+// PoissonDenoiseShader. u[0] = (resolution, lumaPhi, depthPhi), u[1] = (normalPhi, radius, index, SAMPLES), u[2].x = NORMAL_VECTOR_TYPE,
+// u[3..6] = inversa de la proyeccion, u[7 + i].xyz = poissonDisk[i]. t0 = tDiffuse, t1 = tNormal, t2 = tNoise, td = tDepth
+fn pd_luma(a: vec3<f32>) -> f32 {
+    return dot(vec3<f32>(0.2125, 0.7154, 0.0721), a);
+}
+
+@fragment
+fn fs_denoise(in: VOut) -> @location(0) vec4<f32> {
+    let vUv = in.vuv;
+    let resolution = u[0].xy;
+    let lumaPhi = u[0].z;
+    let depthPhi = u[0].w;
+    let normalPhi = u[1].x;
+    let radius = u[1].y;
+    let index = i32(u[1].z);
+    let samples = i32(u[1].w);
+    let ntype = i32(u[2].x);
+    let projInv = g_mat(3u);
+    let depth = g_depth(vUv);
+    let viewNormal = g_view_normal(t1, vUv, ntype, projInv);
+    if (depth == 1.0 || dot(viewNormal, viewNormal) == 0.0) {
+        discard;
+    }
+    let texel = textureSampleLevel(t0, sl, vUv, 0.0);
+    let center = texel.rgb;
+    let viewPos = g_view_pos(vUv, depth, projInv);
+    let noiseResolution = vec2<f32>(textureDimensions(t2));
+    let noiseUv = vUv * resolution / noiseResolution;
+    let noiseTexel = wload(t2, noiseUv);
+    let nv = noiseTexel[index % 4];
+    let noiseVec = vec2<f32>(sin(nv * 2.0 * PI_F), cos(nv * 2.0 * PI_F));
+    let rotationMatrix = mat2x2<f32>(vec2<f32>(noiseVec.x, -noiseVec.y), vec2<f32>(noiseVec.x, noiseVec.y));
+    var totalWeight = 1.0;
+    var denoised = texel.rgb;
+    for (var i = 0; i < samples; i = i + 1) {
+        let sampleDir = u[7 + i].xyz;
+        let offset = rotationMatrix * (sampleDir.xy * (1.0 + sampleDir.z * (radius - 1.0)) / resolution);
+        let sampleUv = vUv + offset;
+        let sampleTexel = textureSampleLevel(t0, sl, sampleUv, 0.0);
+        let sampleDepth = g_depth(sampleUv);
+        let sampleNormal = g_view_normal(t1, sampleUv, ntype, projInv);
+        let neighborColor = sampleTexel.rgb;
+        let viewPosSample = g_view_pos(sampleUv, sampleDepth, projInv);
+        let normalDiff = dot(viewNormal, sampleNormal);
+        let normalSimilarity = pow(max(normalDiff, 0.0), normalPhi);
+        let lumaDiff = abs(pd_luma(neighborColor) - pd_luma(center));
+        let lumaSimilarity = max(1.0 - lumaDiff / lumaPhi, 0.0);
+        let depthDiff = abs(dot(viewPos - viewPosSample, viewNormal));
+        let depthSimilarity = max(1.0 - depthDiff / depthPhi, 0.0);
+        let w = lumaSimilarity * depthSimilarity * normalSimilarity;
+        denoised = denoised + w * neighborColor;
+        totalWeight = totalWeight + w;
+    }
+    if (totalWeight > 0.0) {
+        denoised = denoised / totalWeight;
+    }
+    return vec4<f32>(denoised, 1.0);
+}
+
+// GTAODepthShader. u[0] = (cameraNear, cameraFar, PERSPECTIVE_CAMERA, 0). td = tDepth
+@fragment
+fn fs_aodepth(in: VOut) -> @location(0) vec4<f32> {
+    let near = u[0].x;
+    let far = u[0].y;
+    let z = g_depth(in.vuv);
+    var depth = z;
+    if (u[0].z > 0.5) {
+        let viewZ = (near * far) / ((far - near) * z - far);
+        depth = (viewZ + near) / (near - far);
+    }
+    return vec4<f32>(vec3<f32>(1.0 - depth), 1.0);
+}
+
+// GTAOBlendShader. u[0].x = intensity. t0 = tDiffuse
+@fragment
+fn fs_aoblend(in: VOut) -> @location(0) vec4<f32> {
+    let texel = textureSample(t0, sl, in.vuv);
+    return vec4<f32>(mix(vec3<f32>(1.0), texel.rgb, u[0].x), texel.a);
+}

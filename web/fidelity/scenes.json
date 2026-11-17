@@ -23,5 +23,11 @@
   { "id": "bloom-cero", "query": "renderer=@R&scene=bloom-cero&fog=exp", "advance": 2, "nota": "bloom con strength 0: no cambia la imagen" },
   { "id": "smaa", "query": "renderer=@R&scene=smaa&fog=exp", "advance": 3, "nota": "SMAAPass tras OutputPass sobre bordes inclinados" },
   { "id": "ao-normales", "query": "renderer=@R&scene=ao-normales", "advance": 2, "nota": "scene.overrideMaterial = MeshNormalMaterial sobre la sala y los modelos" },
+  { "id": "ao", "query": "renderer=@R&scene=ao&fog=exp", "advance": 2, "nota": "GTAOPass con los valores del juego: RenderPass, GTAO, bloom, salida y SMAA" },
+  { "id": "ao-mezcla", "query": "renderer=@R&scene=ao-mezcla&fog=exp", "advance": 2, "nota": "GTAOPass en modo Default (mezcla multiplicativa) + OutputPass" },
+  { "id": "ao-ao", "query": "renderer=@R&scene=ao-ao&fog=exp", "advance": 2, "nota": "salida AO cruda de GTAOPass (media resolucion)" },
+  { "id": "ao-denoise", "query": "renderer=@R&scene=ao-denoise&fog=exp", "advance": 2, "nota": "salida con denoise de Poisson" },
+  { "id": "ao-depth", "query": "renderer=@R&scene=ao-depth&fog=exp", "advance": 2, "nota": "profundidad lineal de GTAOPass" },
+  { "id": "ao-normal", "query": "renderer=@R&scene=ao-normal&fog=exp", "advance": 2, "nota": "normales de GTAOPass" },
   { "id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces" }
 ]

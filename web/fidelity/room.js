@@ -6,6 +6,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -304,7 +305,7 @@ if (sceneId === 'geoms') {
 
 // ---- modelos: GLB reales del juego con GLTFLoader + meshopt ----
 let modelsDone = Promise.resolve();
-if (sceneId === 'modelos' || sceneId === 'interior' || sceneId === 'piscina-sol' || sceneId === 'ao-normales') {
+if (sceneId === 'modelos' || sceneId === 'interior' || sceneId === 'piscina-sol' || sceneId.startsWith('ao')) {
   const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
   const items = [
     ['/models/items/bat.glb', -3.2, 0.9, 0.5], ['/models/items/nokia.glb', -1.2, 0.5, 1.0], ['/models/items/locker.glb', 1.4, 1.0, 0.0], ['/models/cosmetics/bicorn_hat.glb', 3.4, 0.5, 1.0],
@@ -552,6 +553,30 @@ if (sceneId === 'ao-normales') {
     renderer.render(scene, camera);
     scene.overrideMaterial = null;
   };
+}
+
+// ---- escenas 'ao*': GTAOPass con los valores del juego (radio 0.9, thickness 1.2, 8 muestras, mitad de resolucion) ----
+// ao = cadena completa RenderPass -> GTAO -> Bloom -> Output -> SMAA; ao-ao / ao-denoise / ao-depth / ao-normal = salidas de depuracion de GTAOPass
+if (sceneId.startsWith('ao') && sceneId !== 'ao-normales') {
+  // el ruido del denoise (SimplexNoise) usa Math.random: semilla fija para que three y Phoenyx generen la misma textura
+  let seed = 12345;
+  Math.random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const composer = new EffectComposer(renderer);
+  composer.setPixelRatio(1);
+  composer.setSize(1280, 720);
+  composer.addPass(new RenderPass(scene, camera));
+  const ao = new GTAOPass(scene, camera, 640, 360);
+  ao.updateGtaoMaterial({ radius: 0.9, distanceExponent: 1.5, thickness: 1.2, scale: 1, samples: 8 });
+  ao.blendIntensity = 0.85;
+  const outs = { 'ao-ao': GTAOPass.OUTPUT.AO, 'ao-denoise': GTAOPass.OUTPUT.Denoise, 'ao-depth': GTAOPass.OUTPUT.Depth, 'ao-normal': GTAOPass.OUTPUT.Normal };
+  if (sceneId in outs) ao.output = outs[sceneId];
+  composer.addPass(ao);
+  if (sceneId === 'ao') {
+    composer.addPass(new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.6, 0.92));
+    composer.addPass(new OutputPass());
+    composer.addPass(new SMAAPass(1280, 720));
+  } else composer.addPass(new OutputPass());
+  draw = () => composer.render(0);
 }
 
 // contrato de tools/fidelity/capture.mjs

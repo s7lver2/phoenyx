@@ -938,6 +938,10 @@ impl Gl {
             5 => "fs_smaa_edges",
             6 => "fs_smaa_weights",
             7 => "fs_smaa_blend",
+            8 => "fs_gtao",
+            9 => "fs_denoise",
+            10 => "fs_aoblend",
+            11 => "fs_aodepth",
             _ => return false,
         };
         let mut bl = [0u32; 7];
