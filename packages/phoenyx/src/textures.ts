@@ -105,6 +105,8 @@ export class TextureCache {
     if (!tex) return 0;
     let rec = this.ids.get(tex);
     if (rec && (rec as any).rt) return rec.id === this.avoid ? 0 : rec.id;
+    // textura de render target o de profundidad que aun no se ha creado en la GPU
+    if (!rec && (tex.isDepthTexture || tex.isRenderTargetTexture)) return 0;
     if (rec && rec.version === tex.version && rec.source === tex.image) return rec.id;
     const px = this.pixels(tex);
     if (!px) return rec ? rec.id : 0;

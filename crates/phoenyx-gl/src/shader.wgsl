@@ -454,7 +454,15 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
     }
     var rgb = diffuse;   // MeshBasicMaterial: outgoingLight = diffuse
 
-    if (m.misc.y > 0.5) {
+    if (m.misc.y > 1.5) {
+        // ---- MeshNormalMaterial: normal_fragment_begin + packNormalToRGB ----
+        var normal = nUn;
+        if ((dr.w & 64u) != 0u) {
+            normal = normal * select(-1.0, 1.0, frontFacing);
+        }
+        // meshnormal_frag no incluye tone mapping, codificacion de color ni niebla
+        return vec4<f32>(normal * 0.5 + 0.5, select(1.0, diffuseA, (dr.w & 4u) != 0u));
+    } else if (m.misc.y > 0.5) {
         // ---- MeshStandardMaterial: meshphysical.glsl.js sin sheen, clearcoat, iridiscencia ni transmision ----
         // normal_fragment_begin + normal_fragment_maps
         let faceDirection = select(-1.0, 1.0, frontFacing);

@@ -60,6 +60,8 @@ export interface FrameState {
   shadow: { enabled: boolean; type: number; autoUpdate: boolean; needsUpdate: boolean };
 }
 
+const WHITE = { r: 1, g: 1, b: 1 };
+
 const painterSortStable = (a: Item, b: Item) =>
   a.groupOrder !== b.groupOrder ? a.groupOrder - b.groupOrder
   : a.renderOrder !== b.renderOrder ? a.renderOrder - b.renderOrder
@@ -105,6 +107,9 @@ export class Packer {
     this.projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projScreen);
 
+    // scene.overrideMaterial: solo MeshNormalMaterial (lo usa GTAOPass para las normales); se ordena por el material de cada objeto y se dibuja con el del override
+    let ov = scene.isScene ? scene.overrideMaterial : null;
+    if (ov && !ov.isMeshNormalMaterial) (warnOnce('override-' + ov.type, `overrideMaterial ${ov.type} aun no esta soportado y se ignora`), (ov = null));
     this.opaque.length = this.transparent.length = this.lights.length = 0;
     this.project(scene, camera, 0);
     this.opaque.sort(painterSortStable);
@@ -118,7 +123,7 @@ export class Packer {
       if (i === undefined) {
         i = mats.size;
         mats.set(m, i);
-        const c = m.color, e = m.emissive;
+        const c = m.color ?? WHITE, e = m.emissive;
         const k = m.emissiveIntensity ?? 1;
         const std = m.isMeshStandardMaterial ? 1 : 0;
         const maps = [m.map, std ? m.normalMap : null, std ? m.roughnessMap : null, std ? m.emissiveMap : null, std ? m.bumpMap : null];
@@ -136,7 +141,7 @@ export class Packer {
         matData.push(
           c.r, c.g, c.b, m.opacity,
           e && std ? e.r * k : 0, e && std ? e.g * k : 0, e && std ? e.b * k : 0, std ? m.roughness : 1,
-          std ? m.metalness : 0, std, m.fog === false ? 0 : 1, m.vertexColors ? 1 : 0,
+          std ? m.metalness : 0, m.isMeshNormalMaterial ? 2 : std, m.fog === false || m.isMeshNormalMaterial ? 0 : 1, m.vertexColors ? 1 : 0,
           m.alphaTest > 0 ? m.alphaTest : 0, ns ? ns.x : 1, ns ? ns.y : 1, m.bumpScale ?? 1,
           mask, 0, 0, 0,
           ...uv,
@@ -149,7 +154,7 @@ export class Packer {
     // sombras (WebGLShadowMap.render): luces con castShadow, ya sea por foco o direccional; los mapas se repintan segun autoUpdate/needsUpdate
     const sh = st.shadow;
     const shadowLights: any[] = [];
-    if (sh.enabled) {
+    if (sh.enabled && !ov) {
       for (const l of this.lights) {
         if (!l.castShadow || !l.shadow) continue;
         if (!l.isSpotLight && !l.isDirectionalLight) warnOnce('shadow-' + l.type, `la sombra de ${l.type} aun no esta soportada`);
@@ -158,7 +163,7 @@ export class Packer {
       }
     }
     // capas estables: las luces que siguen conservan su capa; las nuevas toman una libre y se pintan aunque no lo pidan sus banderas
-    for (const l of [...this.layerOf.keys()]) if (!shadowLights.includes(l)) this.layerOf.delete(l);
+    if (!ov) for (const l of [...this.layerOf.keys()]) if (!shadowLights.includes(l)) this.layerOf.delete(l);
     const fresh = new Set<any>();
     for (const l of shadowLights) {
       if (this.layerOf.has(l)) continue;
@@ -170,7 +175,7 @@ export class Packer {
     }
     const nLayers = shadowLights.reduce((n, l) => Math.max(n, this.layerOf.get(l)! + 1), 0);
     // como WebGLShadowMap.render: sin luces con sombra no se hace nada (y needsUpdate se conserva)
-    const shadowRan = sh.enabled && shadowLights.length > 0 && (sh.autoUpdate || sh.needsUpdate);
+    const shadowRan = sh.enabled && !ov && shadowLights.length > 0 && (sh.autoUpdate || sh.needsUpdate);
     let sSize = this.sSize;
     for (const l of shadowLights) sSize = Math.max(sSize, l.shadow.mapSize.x, l.shadow.mapSize.y);
     const sLayers = Math.max(this.sLayers, nLayers);
@@ -178,7 +183,7 @@ export class Packer {
     if (shadowAlloc) (this.sLayers = sLayers, this.sSize = sSize);
     // un mapa recien reservado esta vacio (profundidad 0 = todo en sombra): se pinta siempre
     const force = shadowLights.length > 0 && (this.forceShadows || !!shadowAlloc);
-    this.forceShadows = false;
+    if (!ov) this.forceShadows = false;
     const shadowCasters: Array<Array<{ object: any; geometry: any; material: any; group: any }> | null> = shadowLights.map((l) => {
       if (!force && !fresh.has(l) && !(shadowRan && (l.shadow.autoUpdate || l.shadow.needsUpdate))) return null;
       l.shadow.updateMatrices(l);
@@ -195,11 +200,11 @@ export class Packer {
     let no = 0;
     const objRec = new Map<any, number>();
     for (const it of list) {
-      const o = it.object, m = it.material;
-      // como renderBufferDirect: sin posicion no se dibuja; materiales sin color (Shader, Depth, Normal...) aun no se soportan
+      const o = it.object, m = ov ?? it.material;
+      // como renderBufferDirect: sin posicion no se dibuja; materiales sin color (Shader, Depth...) aun no se soportan
       const gp = it.geometry.attributes.position;
       if (!gp || gp.count === 0) continue;
-      if (!m.color) { warnOnce(m.type, `${m.type} aun no esta soportado y se omite`); continue; }
+      if (!m.color && !m.isMeshNormalMaterial) { warnOnce(m.type, `${m.type} aun no esta soportado y se omite`); continue; }
       this.mv.multiplyMatrices(camera.matrixWorldInverse, o.matrixWorld);
       this.nm.getNormalMatrix(this.mv);
       const base = no * OBJECT_F;

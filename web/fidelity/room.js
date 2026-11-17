@@ -304,13 +304,13 @@ if (sceneId === 'geoms') {
 
 // ---- modelos: GLB reales del juego con GLTFLoader + meshopt ----
 let modelsDone = Promise.resolve();
-if (sceneId === 'modelos' || sceneId === 'interior' || sceneId === 'piscina-sol') {
+if (sceneId === 'modelos' || sceneId === 'interior' || sceneId === 'piscina-sol' || sceneId === 'ao-normales') {
   const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
   const items = [
     ['/models/items/bat.glb', -3.2, 0.9, 0.5], ['/models/items/nokia.glb', -1.2, 0.5, 1.0], ['/models/items/locker.glb', 1.4, 1.0, 0.0], ['/models/cosmetics/bicorn_hat.glb', 3.4, 0.5, 1.0],
     ['/models/items/pokeball.glb', -2.2, 0.4, 2.8], ['/models/items/beer.glb', 0.2, 0.7, 3.0],
   ];
-  modelsDone = Promise.all(items.filter((it) => sceneId === 'modelos' || !it[0].includes('beer')).map(async ([url, x, size, z], i) => {
+  modelsDone = Promise.all(items.filter((it) => sceneId === 'modelos' || (!it[0].includes('beer') && !(sceneId.startsWith('ao') && it[0].includes('bicorn')))).map(async ([url, x, size, z], i) => {
     const gltf = await loader.loadAsync(url);
     const root = gltf.scene;
     const box = new THREE.Box3().setFromObject(root);
@@ -541,6 +541,17 @@ if (sceneId.startsWith('smaa')) {
       dbg.render(renderer);
     };
   }
+}
+
+// ---- escena 'ao-normales': la sala y los modelos dibujados con scene.overrideMaterial = MeshNormalMaterial (las normales de GTAOPass) ----
+if (sceneId === 'ao-normales') {
+  scene.children.find((o) => o.material === mCeil)?.material;
+  const nm = new THREE.MeshNormalMaterial();
+  draw = () => {
+    scene.overrideMaterial = nm;
+    renderer.render(scene, camera);
+    scene.overrideMaterial = null;
+  };
 }
 
 // contrato de tools/fidelity/capture.mjs
