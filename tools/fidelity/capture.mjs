@@ -15,6 +15,7 @@ const scenesPath = path.resolve(arg('scenes', 'E:/backrooms/client/src/dev/scene
 const throttle = Number(arg('throttle', '1'));
 const preset = arg('preset', 'high');
 const only = arg('only', '').split(',').filter(Boolean);
+const renderer = arg('renderer', 'three'); // sustituye @R en las queries de las escenas (banco de la fase 1)
 const chrome = arg('chrome', 'C:/Program Files/Google/Chrome/Application/chrome.exe');
 
 const scenes = JSON.parse(fs.readFileSync(scenesPath, 'utf8')).filter((s) => !only.length || only.includes(s.id));
@@ -43,7 +44,7 @@ for (const s of scenes) {
     }
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
-    await page.goto(`${base}/?${s.query}&preset=${preset}`);
+    await page.goto(`${base}/?${s.query.replaceAll('@R', renderer)}&preset=${preset}`);
     const ready = () => page.evaluate(() => !!window.__capture?.ready);
     // Algunas escenas arrancan solas (&pool, &suites); las demas piden pulsar PLAY (una vez, cuando aparece el menu).
     const t0 = Date.now();

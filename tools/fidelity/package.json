@@ -6,5 +6,9 @@
   "dependencies": {
     "playwright-core": "^1.50.0",
     "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "three": "^0.160.1"
   }
 }

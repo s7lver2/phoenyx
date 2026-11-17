@@ -1,0 +1,6 @@
+[
+  { "id": "sala-exp", "query": "renderer=@R&scene=exp", "advance": 2, "nota": "sala con FogExp2" },
+  { "id": "sala-lineal", "query": "renderer=@R&scene=lineal", "advance": 2, "nota": "sala con Fog lineal" },
+  { "id": "sala-sinniebla", "query": "renderer=@R&scene=nofog", "advance": 2, "nota": "sala sin niebla" },
+  { "id": "sala-basic", "query": "renderer=@R&scene=basic", "advance": 2, "nota": "todo MeshBasicMaterial, sin luces" }
+]

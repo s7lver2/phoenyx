@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fidelidad fase 1</title>
+<body style="background:#000">
+<script>
+  // ?renderer=three|phoenyx elige el empaquetado de room.js
+  const r = new URLSearchParams(location.search).get('renderer') === 'phoenyx' ? 'phoenyx' : 'three';
+  const s = document.createElement('script');
+  s.type = 'module';
+  s.src = `dist/${r}.js`;
+  document.body.appendChild(s);
+</script>
