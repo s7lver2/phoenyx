@@ -155,7 +155,12 @@ export class TextureCache {
   /** Clave del conjunto de texturas de un material (0 si no tiene): se registra en la GPU la primera vez. */
   materialKey(m: any): number {
     const std = m.isMeshStandardMaterial;
-    const list = [m.map, std ? m.normalMap : null, std ? m.roughnessMap : null, std ? m.emissiveMap : null, std ? m.bumpMap : null];
+    return this.listKey([m.map, std ? m.normalMap : null, std ? m.roughnessMap : null, std ? m.emissiveMap : null, std ? m.bumpMap : null]);
+  }
+
+  /** Clave de un conjunto de hasta 5 texturas (huecos null); 0 si no hay ninguna. */
+  listKey(list: any[]): number {
+    list = [...list, null, null, null, null, null].slice(0, 5);
     if (!list.some(Boolean)) return 0;
     const tex = list.map((t) => this.textureId(t));
     const samp = list.map((t) => this.samplerId(t));

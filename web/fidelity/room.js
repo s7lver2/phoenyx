@@ -11,6 +11,7 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
+import { makePrueba } from './games/prueba.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
@@ -639,6 +640,33 @@ if (sceneId === 'skin' || sceneId === 'skin-sombra' || sceneId === 'skin-normale
     scene.add(sun, sun.target);
     scene.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
   }
+}
+
+// ---- escenas 'sh-*': ShaderMaterial del juego con el tiempo fijo ----
+if (sceneId === 'sh-prueba') {
+  const map = new THREE.CanvasTexture((() => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d');
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { g.fillStyle = (x + y) % 2 ? '#e0a030' : '#2060c0'; g.fillRect(x * 8, y * 8, 8, 8); }
+    g.fillStyle = '#e04030';
+    g.fillRect(0, 0, 20, 12);
+    return c;
+  })());
+  map.colorSpace = THREE.SRGBColorSpace;
+  // el mismo shader con uniformes distintos por malla (cada dibujo lee los suyos): plano de doble cara, caja y plano aditivo
+  const a = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.6), makePrueba(THREE, { map, color: 0x30c070, time: 0.4 }));
+  a.position.set(-2.2, 1.5, 0);
+  a.material.side = THREE.DoubleSide;
+  const b = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 1.4), makePrueba(THREE, { map, color: 0xd04060, time: 1.9 }));
+  b.position.set(0.4, 1.2, 1);
+  b.rotation.y = 0.6;
+  b.material.transparent = false;
+  const c = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.6), makePrueba(THREE, { map, color: 0x4060ff, time: 3.1 }));
+  c.position.set(2.6, 1.5, -1);
+  c.material.blending = THREE.AdditiveBlending;
+  c.material.depthWrite = false;
+  scene.add(a, b, c);
 }
 
 // ---- escena 'entidades': los GLB con esqueleto del juego, clonados con SkeletonUtils y animados con AnimationMixer ----

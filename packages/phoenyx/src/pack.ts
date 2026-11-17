@@ -101,7 +101,7 @@ export class Packer {
   forceShadows = false;
   private sSize = 0;
 
-  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number): Packed {
+  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; values: number[]; texKey: number; b0: number; b1: number } | null): Packed {
     if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
     if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
     this.projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -118,10 +118,12 @@ export class Packer {
     // materiales y objetos: una entrada por dibujo
     const mats = new Map<any, number>();
     const matData: number[] = [];
+    // plazas de MATERIAL_F floats: los materiales estandar usan una; los shaders de usuario, las que pidan sus uniformes
+    let nslot = 0;
     const matIndex = (m: any) => {
       let i = mats.get(m);
       if (i === undefined) {
-        i = mats.size;
+        i = nslot++;
         mats.set(m, i);
         const c = m.color ?? WHITE, e = m.emissive;
         const k = m.emissiveIntensity ?? 1;
@@ -204,7 +206,10 @@ export class Packer {
       // como renderBufferDirect: sin posicion no se dibuja; materiales sin color (Shader, Depth...) aun no se soportan
       const gp = it.geometry.attributes.position;
       if (!gp || gp.count === 0) continue;
-      if (!m.color && !m.isMeshNormalMaterial) { warnOnce(m.type, `${m.type} aun no esta soportado y se omite`); continue; }
+      // ShaderMaterial del juego: dibujo de usuario (WGSL portado, ver user-shaders/); sin version portada se avisa y se omite
+      const user = m.isShaderMaterial && !ov ? userInfo(m) : null;
+      if (m.isShaderMaterial && !ov && !user) { warnOnce('shader-' + (m.name || m.uuid), 'ShaderMaterial sin version WGSL registrada: no se dibuja'); continue; }
+      if (!user && !m.color && !m.isMeshNormalMaterial) { warnOnce(m.type, `${m.type} aun no esta soportado y se omite`); continue; }
       this.mv.multiplyMatrices(camera.matrixWorldInverse, o.matrixWorld);
       this.nm.getNormalMatrix(this.mv);
       const base = no * OBJECT_F;
@@ -213,10 +218,17 @@ export class Packer {
       const n = this.nm.elements;
       objs.set([n[0], n[1], n[2], 0, n[3], n[4], n[5], 0, n[6], n[7], n[8], 0], base + 16);
       const gid = geomId(it.geometry);
-      const tk = texKey(m);
-      const mi = matIndex(m);
-      const ii = o.isInstancedMesh ? instInfo(o) : null;
-      if (o.isInstancedMesh && (!ii || ii.count === 0)) continue;
+      const tk = user ? user.texKey : texKey(m);
+      let mi: number;
+      if (user) {
+        // uniformes del dibujo en plazas propias de `materials` (a continuacion de los de los materiales estandar)
+        mi = nslot;
+        nslot += Math.ceil(user.values.length / MATERIAL_F);
+        matData.push(...user.values);
+        while (matData.length < nslot * MATERIAL_F) matData.push(0);
+      } else mi = matIndex(m);
+      const ii = o.isInstancedMesh && !user ? instInfo(o) : null;
+      if (o.isInstancedMesh && !user && (!ii || ii.count === 0)) continue;
       // malla con piel: su tramo de huesos (0 = sin piel; sin skinIndex/skinWeight se dibuja como Mesh)
       const bk = o.isSkinnedMesh && it.geometry.attributes.skinIndex && it.geometry.attributes.skinWeight ? boneInfo(o) : 0;
       // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
@@ -232,7 +244,11 @@ export class Packer {
       const bits = (backSide: boolean, double: boolean, normalDouble: boolean) =>
         common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
       const emit = (fl: number) => {
-        if (!ii) {
+        if (user) {
+          // bit 1024: dibujo de usuario; la mezcla va empaquetada en las palabras 9 y 11 y el id del shader en la 10
+          draws.push(gid, no, mi, fl | 1024, first, idx, tk, 0xffffffff, 1, user.b0, user.id, user.b1);
+          triangles += idx / 3;
+        } else if (!ii) {
           draws.push(gid, no, mi, fl, first, idx, tk, 0xffffffff, 1, 0, 0, bk);
           triangles += idx / 3;
         } else {

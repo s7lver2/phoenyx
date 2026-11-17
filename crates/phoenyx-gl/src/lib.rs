@@ -161,6 +161,14 @@ fn blend_op(e: u32) -> wgpu::BlendOperation {
     }
 }
 
+/// WGSL de cada shader de usuario (cuerpo; la cabecera comun se antepone). Los ids los define packages/phoenyx/src/user-shaders.
+fn user_src(id: u32) -> Option<&'static str> {
+    Some(match id {
+        0 => include_str!("user/prueba.wgsl"),
+        _ => return None,
+    })
+}
+
 struct Geom {
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
@@ -254,6 +262,9 @@ pub struct Gl {
     post_n: u32,
     post_frame: Option<wgpu::SurfaceTexture>,
     post_pls: HashMap<(u32, [u32; 7], u32), PassPl>,
+    /// shaders de usuario (ShaderMaterial portados): modulo por id y pipeline por (id, banderas, formato, mezcla)
+    user_modules: HashMap<u32, wgpu::ShaderModule>,
+    user_pls: HashMap<(u32, u32, u32, u32, u32), wgpu::RenderPipeline>,
     samp_linear: wgpu::Sampler,
     samp_nearest: wgpu::Sampler,
 }
@@ -511,6 +522,8 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         post_n: 0,
         post_frame: None,
         post_pls: HashMap::new(),
+        user_modules: HashMap::new(),
+        user_pls: HashMap::new(),
         samp_linear,
         samp_nearest,
     })
@@ -916,6 +929,68 @@ impl Gl {
         self.pipelines.insert(key, pl);
     }
 
+    /// Pipeline de un dibujo de usuario: `flags` como los del material estandar, `b0`/`b1` = mezcla empaquetada (ver pack.ts).
+    fn ensure_user_pipeline(&mut self, shader: u32, flags: u32, fmt: u32, b0: u32, b1: u32) {
+        let flags = flags & 31;
+        let key = (shader, flags, fmt, b0, b1);
+        if self.user_pls.contains_key(&key) {
+            return;
+        }
+        let Some(body) = user_src(shader) else { return };
+        if !self.user_modules.contains_key(&shader) {
+            let src = format!("{}
+{}", include_str!("user/_header.wgsl"), body);
+            let m = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("phoenyx-user"), source: wgpu::ShaderSource::Wgsl(src.into()) });
+            self.user_modules.insert(shader, m);
+        }
+        let module = &self.user_modules[&shader];
+        let cull = if flags & 1 != 0 { None } else { Some(wgpu::Face::Back) };
+        let cw = (flags & 2 != 0) != (fmt != 0);
+        let front = if cw { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw };
+        // mezcla: b0 = srcRGB | dstRGB << 8 | ecuacion << 16 | modo << 24; b1 = srcA | dstA << 8 | ecuacionA << 16
+        let blend = ((b0 >> 24) != 0).then(|| wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor: blend_factor(b0 & 255), dst_factor: blend_factor((b0 >> 8) & 255), operation: blend_op((b0 >> 16) & 255) },
+            alpha: wgpu::BlendComponent { src_factor: blend_factor(b1 & 255), dst_factor: blend_factor((b1 >> 8) & 255), operation: blend_op((b1 >> 16) & 255) },
+        });
+        let pl = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&self.layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some("vs_user"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 68,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 2 },
+                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 32, shader_location: 3 },
+                    ],
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some("fs_user"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: target_format(fmt, self.cfg.format), blend, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState { cull_mode: cull, front_face: front, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH,
+                depth_write_enabled: Some(flags & 8 != 0),
+                depth_compare: Some(if flags & 16 != 0 { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always }),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        self.user_pls.insert(key, pl);
+    }
+
     /// Reserva los mapas de sombra (una capa por luz con sombra, todas de `size` x `size`). Deja los mapas vacios.
     pub fn set_shadow_maps(&mut self, layers: u32, size: u32) {
         let (all, each) = shadow_views(&self.device, layers.max(1), size.max(1));
@@ -1110,6 +1185,10 @@ impl Gl {
         // la malla instanciada se resuelve a su plaza de la reserva; el indice de dibujo va en los 16 bits altos de la instancia
         let mut dr = draws.to_vec();
         for c in dr.chunks_exact_mut(12) {
+            // dibujo de usuario (ShaderMaterial): sin huesos ni instancias
+            if c[3] & 1024 != 0 {
+                continue;
+            }
             // tramo de huesos de una malla con piel: c[11] = su clave; el shader recibe offset + 1 (0 = sin piel)
             if c[11] != 0 {
                 c[11] = self.slots.get(&c[11]).map_or(0, |sl| sl.offset + 1);
@@ -1169,7 +1248,11 @@ impl Gl {
             None => (0, None, None),
         };
         for d in draws[..nmain].chunks_exact(12) {
-            self.ensure_pipeline(d[3], tfmt);
+            if d[3] & 1024 != 0 {
+                self.ensure_user_pipeline(d[10], d[3], tfmt, d[9], d[11]);
+            } else {
+                self.ensure_pipeline(d[3], tfmt);
+            }
             self.ensure_tex_bg(d[6]);
         }
         for d in draws[nmain..].chunks_exact(12) {
@@ -1261,7 +1344,13 @@ impl Gl {
                 if d[8] == 0 || i >= 65536 {
                     continue;
                 }
-                p.set_pipeline(&self.pipelines[&((d[3] & 31) | (tfmt << 5))]);
+                if d[3] & 1024 != 0 {
+                    // dibujo de usuario: sin pipeline (shader no registrado) no se pinta
+                    let Some(up) = self.user_pls.get(&(d[10], d[3] & 31, tfmt, d[9], d[11])) else { continue };
+                    p.set_pipeline(up);
+                } else {
+                    p.set_pipeline(&self.pipelines[&((d[3] & 31) | (tfmt << 5))]);
+                }
                 if d[6] != last_key {
                     p.set_bind_group(1, &self.bgs[&d[6]], &[]);
                     last_key = d[6];
