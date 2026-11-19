@@ -528,6 +528,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoenyx-collide"
+version = "0.0.1"
+
+[[package]]
 name = "phoenyx-gl"
 version = "0.0.1"
 dependencies = [
