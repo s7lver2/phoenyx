@@ -48,6 +48,8 @@ export interface Packed {
 }
 
 export interface FrameState {
+  /** scene y camera ya tienen las matrices del mundo al dia en este fotograma */
+  matricesDone?: boolean;
   exposure: number;
   toneMapping: number;
   /** color de fondo ya en el espacio de salida (lo que three manda a gl.clearColor) */
@@ -106,8 +108,11 @@ export class Packer {
   private sSize = 0;
 
   pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any, slots?: any, lineMode?: number) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; points: boolean; attributes: any; values: number[]; texKey: number; b0: number; b1: number } | null, patchInfo: (material: any) => { id: number; extras: number[] } | null = () => null): Packed {
-    if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
-    if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
+    // las matrices ya las actualizo render() (runBeforeRender); repetirlo recorre y recompone todo el grafo otra vez
+    if (!st.matricesDone) {
+      if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
+      if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
+    }
     this.projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projScreen);
 
@@ -241,8 +246,11 @@ export class Packer {
       if (!objRec.has(o)) objRec.set(o, no);
       objs.set(o.matrixWorld.elements, base);
       const n = this.nm.elements;
-      objs.set([n[0], n[1], n[2], 0, n[3], n[4], n[5], 0, n[6], n[7], n[8], 0], base + 16);
-      if (o.isSprite) objs.set([o.center.x, o.center.y], base + 28); // `center` del Sprite para sprite_basic.wgsl
+      // matriz normal 3x3 en columnas de 4 (escritura directa: sin crear un array por objeto)
+      objs[base + 16] = n[0]; objs[base + 17] = n[1]; objs[base + 18] = n[2]; objs[base + 19] = 0;
+      objs[base + 20] = n[3]; objs[base + 21] = n[4]; objs[base + 22] = n[5]; objs[base + 23] = 0;
+      objs[base + 24] = n[6]; objs[base + 25] = n[7]; objs[base + 26] = n[8]; objs[base + 27] = 0;
+      if (o.isSprite) (objs[base + 28] = o.center.x), (objs[base + 29] = o.center.y); // `center` del Sprite para sprite_basic.wgsl
       const lineMode = o.isLine && !o.isLineSegments ? (o.isLineLoop ? 2 : 1) : 0;
       const gid = geomId(it.geometry, user ? user.attributes : null, lineMode);
       const tk = user ? user.texKey : texKey(m);

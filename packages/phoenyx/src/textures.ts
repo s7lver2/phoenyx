@@ -137,8 +137,24 @@ export class TextureCache {
     return this.textureId(tex);
   }
 
+  /** Ultimo muestreador calculado por textura y los campos de los que depende (evita construir la clave de texto en cada dibujo). */
+  private samplerMemo = new WeakMap<object, { f: number[]; id: number }>();
+  private mkMemo = new WeakMap<object, { s: number[]; key: number }>();
+  private mkScratch: number[] = new Array(10).fill(0);
+
   private samplerId(tex: any): number {
     if (!tex) return 0;
+    const memo = this.samplerMemo.get(tex);
+    if (memo) {
+      const f = memo.f;
+      if (f[0] === tex.wrapS && f[1] === tex.wrapT && f[2] === tex.magFilter && f[3] === tex.minFilter && f[4] === (tex.generateMipmaps !== false ? 1 : 0) && f[5] === (tex.anisotropy || 1)) return memo.id;
+    }
+    const id = this.samplerIdSlow(tex);
+    this.samplerMemo.set(tex, { f: [tex.wrapS, tex.wrapT, tex.magFilter, tex.minFilter, tex.generateMipmaps !== false ? 1 : 0, tex.anisotropy || 1], id });
+    return id;
+  }
+
+  private samplerIdSlow(tex: any): number {
     const wrap = (w: number) => (w === RepeatWrapping ? 0 : w === ClampToEdgeWrapping ? 1 : w === MirroredRepeatWrapping ? 2 : 0);
     const mips = tex.generateMipmaps !== false;
     const min = tex.minFilter;
@@ -159,7 +175,25 @@ export class TextureCache {
   /** Clave del conjunto de texturas de un material (0 si no tiene): se registra en la GPU la primera vez. */
   materialKey(m: any): number {
     const std = m.isMeshStandardMaterial;
-    return this.listKey([m.map, std ? m.normalMap : null, std ? m.roughnessMap : null, std ? m.emissiveMap : null, std ? m.bumpMap : null]);
+    // ids de textura y de muestreador de las 5 ranuras (sin crear arrays: la clave solo se rehace si alguno cambia)
+    const s = this.mkScratch;
+    let any = false;
+    for (let i = 0; i < 5; i++) {
+      const t = i === 0 ? m.map : !std ? null : i === 1 ? m.normalMap : i === 2 ? m.roughnessMap : i === 3 ? m.emissiveMap : m.bumpMap;
+      if (t) any = true;
+      s[i] = this.textureId(t);
+      s[5 + i] = this.samplerId(t);
+    }
+    if (!any) return 0;
+    const memo = this.mkMemo.get(m);
+    if (memo) {
+      let same = true;
+      for (let i = 0; i < 10; i++) if (memo.s[i] !== s[i]) { same = false; break; }
+      if (same) return memo.key;
+    }
+    const key = this.listKey([m.map, std ? m.normalMap : null, std ? m.roughnessMap : null, std ? m.emissiveMap : null, std ? m.bumpMap : null]);
+    this.mkMemo.set(m, { s: s.slice(), key });
+    return key;
   }
 
   /** Clave de un conjunto de hasta 5 texturas (huecos null); 0 si no hay ninguna. */

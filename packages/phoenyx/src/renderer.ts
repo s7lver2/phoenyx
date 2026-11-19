@@ -106,6 +106,17 @@ export class WebGLRenderer {
     this.ready.catch((e) => console.error('[phoenyx] no se pudo iniciar la GPU:', e));
   }
 
+  /** Activa los temporizadores de GPU (timestamp-query); el resultado se lee con `gpuTimes()`. Sin soporte no hace nada. */
+  setGpuTiming(on: boolean) {
+    this.gl?.enable_timing(on);
+  }
+  /** Milisegundos de GPU de la ultima lectura: `shadow`, `scene` y `pass<id>` (pases de pantalla completa, sumados por id). */
+  gpuTimes(): Record<string, number> {
+    const a = this.gl?.timings() ?? [];
+    const out: Record<string, number> = {};
+    for (let i = 0; i + 1 < a.length; i += 2) out[a[i] === 1 ? 'shadow' : a[i] === 2 ? 'scene' : 'pass' + (a[i] - 100)] = +a[i + 1].toFixed(3);
+    return out;
+  }
   /** Tamano del bufer de dibujo en pixeles (como WebGLRenderer.getDrawingBufferSize). */
   getDrawingBufferSize(target: { set(x: number, y: number): unknown }) {
     return target.set(this.domElement.width, this.domElement.height);
@@ -328,7 +339,38 @@ export class WebGLRenderer {
   }
 
   /** Sube la geometria a la GPU si es nueva o cambio (version de sus atributos) y devuelve su id. */
+  /** Atributos que entran en la clave de una geometria, en orden fijo (sin crear arrays: se compara en cada dibujo). */
+  private static readonly GEOM_ATTRS = ['position', 'normal', 'uv', 'color', 'skinIndex', 'skinWeight'];
+
+  /** ¿La geometria sigue igual que cuando se subio? Compara referencia, version y numero de elementos sin construir la clave de texto. */
+  private sameGeom(rec: { snap?: any[]; lm?: number }, g: any, lineMode: number): boolean {
+    const s = rec.snap;
+    if (!s || rec.lm !== lineMode) return false;
+    const at = g.attributes, names = WebGLRenderer.GEOM_ATTRS;
+    for (let i = 0; i < 6; i++) {
+      const a = at[names[i]];
+      if (s[i * 3] !== a) return false;
+      if (a && (s[i * 3 + 1] !== (a.data ?? a).version || s[i * 3 + 2] !== a.count)) return false;
+    }
+    const ix = g.index;
+    return s[18] === ix && (!ix || (s[19] === ix.version && s[20] === ix.count));
+  }
+
+  private snapGeom(rec: { snap?: any[]; lm?: number }, g: any, lineMode: number) {
+    const s: any[] = [], at = g.attributes, names = WebGLRenderer.GEOM_ATTRS;
+    for (let i = 0; i < 6; i++) {
+      const a = at[names[i]];
+      s.push(a, a ? (a.data ?? a).version : 0, a ? a.count : 0);
+    }
+    const ix = g.index;
+    s.push(ix, ix ? ix.version : 0, ix ? ix.count : 0);
+    rec.snap = s;
+    rec.lm = lineMode;
+  }
+
   private geomId(g: any, slots?: { normal?: string[]; uv?: string[]; color?: string[] } | null, lineMode = 0): number {
+    const fast: any = !slots && this.ids.get(g);
+    if (fast && this.sameGeom(fast, g, lineMode)) return fast.id;
     const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv, col = g.attributes.color;
     const aid = (a: any) => {
       if (!a) return 0;
@@ -338,8 +380,8 @@ export class WebGLRenderer {
     };
     const slotKey = slots ? ['normal', 'uv', 'color'].map((k) => (slots[k] ?? []).map((n) => aid(g.attributes[n])).join('+')).join('/') : '';
     const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(col)}:${aid(g.index)}:${aid(g.attributes.skinIndex)}:${aid(g.attributes.skinWeight)}:${slotKey}:L${lineMode}`;
-    let rec = this.ids.get(g);
-    if (rec && rec.key === key) return rec.id;
+    let rec: any = this.ids.get(g);
+    if (rec && rec.key === key) return (slots ? (rec.snap = undefined) : this.snapGeom(rec, g, lineMode), rec.id);
     const f32 = (a: any, n: number) => {
       if (!a) return new Float32Array(0);
       if (a.array instanceof Float32Array && !a.isInterleavedBufferAttribute && a.itemSize === n) return a.array;
@@ -372,6 +414,8 @@ export class WebGLRenderer {
       });
     }
     rec.key = key;
+    if (slots) rec.snap = undefined;
+    else this.snapGeom(rec, g, lineMode);
     // piel: 4 indices de hueso (u32, el wasm los empaqueta a u16) y 4 pesos por vertice
     const si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
     let skinIdx = new Uint32Array(0), skinW = new Float32Array(0);
@@ -497,7 +541,7 @@ export class WebGLRenderer {
     const envId = envTex && envTex.mapping === CubeUVReflectionMapping ? this.textures.idOf(envTex) : 0;
     this.gl.set_environment(envId ? envId : 0xffffffff);
     this.renderCount++;
-    const p = this.packer.pack(scene, camera, { env: !!envId, exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, // con scene.background (Color) three limpia siempre, segun autoClearColor/autoClearDepth aunque autoClear sea false
+    const p = this.packer.pack(scene, camera, { matricesDone: true, env: !!envId, exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, // con scene.background (Color) three limpia siempre, segun autoClearColor/autoClearDepth aunque autoClear sea false
  clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, size: rtOut ? [Math.max(1, Math.floor(this.rt.width)), Math.max(1, Math.floor(this.rt.height))] : [this.domElement.width, this.domElement.height], shadow: this.shadowMap }, (g, slots, lm) => this.geomId(g, slots, lm), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m), (m) => this.patchInfo(m));
     // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
     if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {

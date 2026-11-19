@@ -12,6 +12,24 @@ pub const GLOBALS_F: usize = 64;
 /// Estado de un dispositivo: (perdido, ultimo error). Uno por `Gl`: el renderer principal convive con los de iconos y avatares.
 type Status = std::sync::Arc<std::sync::Mutex<(bool, String)>>;
 
+/// Ranuras de timestamp por tanda (2 por pase): sobra para un fotograma con sombras, escena y todos los pases de postproceso.
+const TS_SLOTS: u32 = 256;
+
+/// Temporizadores de GPU (solo con timestamp-query y activados con `enable_timing`): una pareja de ranuras por pase;
+/// el resultado llega por `map_async` y mientras se lee no se graban parejas nuevas.
+struct Timing {
+    qs: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    read: wgpu::Buffer,
+    period: f32,
+    on: bool,
+    /// ranuras usadas en la tanda actual y el tipo de cada pareja (1 sombras, 2 escena, 100 + id de pase)
+    n: u32,
+    kinds: Vec<u32>,
+    busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    out: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+}
+
 fn entry(b: u32, buf: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry { binding: b, resource: buf.as_entire_binding() }
 }
@@ -325,6 +343,7 @@ pub struct Gl {
     /// pases de pantalla completa grabados y aun sin enviar (un solo encoder y un solo submit por tanda)
     post_enc: Option<wgpu::CommandEncoder>,
     status: Status,
+    timing: Option<Timing>,
     post_n: u32,
     post_frame: Option<wgpu::SurfaceTexture>,
     post_pls: HashMap<(u32, [u32; 7], u32), PassPl>,
@@ -368,7 +387,8 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         })
         .await
         .map_err(err)?;
-    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default()).await.map_err(err)?;
+    let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor { required_features: features, ..Default::default() }).await.map_err(err)?;
     let status: Status = Default::default();
     let st_err = status.clone();
     device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
@@ -582,6 +602,17 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         address_mode_v: wgpu::AddressMode::ClampToEdge,
         ..Default::default()
     });
+    let timing = features.contains(wgpu::Features::TIMESTAMP_QUERY).then(|| Timing {
+            qs: device.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty: wgpu::QueryType::Timestamp, count: TS_SLOTS }),
+            resolve: device.create_buffer(&wgpu::BufferDescriptor { label: None, size: TS_SLOTS as u64 * 8, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false }),
+            read: device.create_buffer(&wgpu::BufferDescriptor { label: None, size: TS_SLOTS as u64 * 8, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
+            period: queue.get_timestamp_period(),
+            on: false,
+            n: 0,
+            kinds: Vec::new(),
+            busy: Default::default(),
+            out: Default::default(),
+        });
     Ok(Gl {
         tex_bgl,
         textures: HashMap::new(),
@@ -644,6 +675,7 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         post_uniforms,
         post_enc: None,
         status,
+        timing,
         post_n: 0,
         post_frame: None,
         post_pls: HashMap::new(),
@@ -666,11 +698,83 @@ impl Gl {
     /// Envia a la GPU los pases de pantalla completa grabados (un solo submit). Lo llaman solos frame(), resize() y los
     /// cambios de render targets; el renderer lo programa ademas al final de la tarea para que lo grabado llegue a pantalla.
     pub fn flush(&mut self) {
-        if let Some(enc) = self.post_enc.take() {
+        let mut enc = self.post_enc.take();
+        if enc.is_none() && self.timing.as_ref().is_some_and(|t| t.n > 0) {
+            enc = Some(self.device.create_command_encoder(&Default::default()));
+        }
+        if let Some(mut enc) = enc {
+            let read = self.ts_resolve(&mut enc);
             self.queue.submit([enc.finish()]);
+            if let Some(n) = read {
+                self.ts_map(n);
+            }
         }
         self.post_n = 0;
         self.post_frame = None;
+    }
+
+    /// Activa o desactiva los temporizadores de GPU (no hacen nada sin timestamp-query).
+    pub fn enable_timing(&mut self, on: bool) {
+        if let Some(t) = &mut self.timing {
+            t.on = on;
+        }
+    }
+
+    /// `[tipo, ms, tipo, ms, ...]` de la ultima lectura: 1 sombras, 2 escena, 100 + id de pase de pantalla completa (sumados por tipo).
+    pub fn timings(&self) -> Vec<f32> {
+        self.timing.as_ref().map_or(Vec::new(), |t| t.out.lock().unwrap().clone())
+    }
+
+    /// Reserva una pareja de ranuras para un pase de `kind`; `None` si no se mide (apagado, leyendo o sin sitio).
+    fn ts_alloc(&mut self, kind: u32) -> Option<u32> {
+        let t = self.timing.as_mut()?;
+        if !t.on || t.busy.load(std::sync::atomic::Ordering::Relaxed) || t.n + 2 > TS_SLOTS {
+            return None;
+        }
+        let i = t.n;
+        t.n += 2;
+        t.kinds.push(kind);
+        Some(i)
+    }
+
+    fn ts_writes(timing: &Option<Timing>, slot: Option<u32>) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        let (t, i) = (timing.as_ref()?, slot?);
+        Some(wgpu::RenderPassTimestampWrites { query_set: &t.qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) })
+    }
+
+    /// Graba la resolucion de las ranuras usadas; devuelve cuantas para leerlas tras el submit.
+    fn ts_resolve(&mut self, enc: &mut wgpu::CommandEncoder) -> Option<u32> {
+        let t = self.timing.as_mut().filter(|t| t.n > 0)?;
+        enc.resolve_query_set(&t.qs, 0..t.n, &t.resolve, 0);
+        enc.copy_buffer_to_buffer(&t.resolve, 0, &t.read, 0, t.n as u64 * 8);
+        t.busy.store(true, std::sync::atomic::Ordering::Relaxed);
+        Some(t.n)
+    }
+
+    fn ts_map(&mut self, n: u32) {
+        let Some(t) = self.timing.as_mut() else { return };
+        let kinds = std::mem::take(&mut t.kinds);
+        t.n = 0;
+        let (read, busy, out, period) = (t.read.clone(), t.busy.clone(), t.out.clone(), t.period);
+        t.read.slice(..n as u64 * 8).map_async(wgpu::MapMode::Read, move |r| {
+            if r.is_ok() {
+                {
+                    let d = read.slice(..n as u64 * 8).get_mapped_range().unwrap();
+                    let ts: &[u64] = bytemuck::cast_slice(&d[..]);
+                    let mut sum: Vec<(u32, f32)> = Vec::new();
+                    for (k, kind) in kinds.iter().enumerate() {
+                        let ms = ts[k * 2 + 1].saturating_sub(ts[k * 2]) as f32 * period * 1e-6;
+                        match sum.iter_mut().find(|e| e.0 == *kind) {
+                            Some(e) => e.1 += ms,
+                            None => sum.push((*kind, ms)),
+                        }
+                    }
+                    *out.lock().unwrap() = sum.into_iter().flat_map(|(k, v)| [k as f32, v]).collect();
+                }
+                read.unmap();
+            }
+            busy.store(false, std::sync::atomic::Ordering::Relaxed);
+        });
     }
 
     pub fn resize(&mut self, w: u32, h: u32) {
@@ -1314,9 +1418,12 @@ impl Gl {
         if self.post_enc.is_none() {
             self.post_enc = Some(self.device.create_command_encoder(&Default::default()));
         }
+        let slot = self.ts_alloc(100 + shader);
         {
+            let tw = Self::ts_writes(&self.timing, slot);
             let mut p = self.post_enc.as_mut().unwrap().begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
+                timestamp_writes: tw,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -1490,9 +1597,15 @@ impl Gl {
         let mut tris = 0u64;
         // pasadas de sombras: [capa, primer dibujo, n dibujos, ancho, alto] por luz que se repinta
         for sp in shadow_passes.chunks_exact(5) {
-            let Some(layer) = self.shadow_layers.get(sp[0] as usize) else { continue };
+            if self.shadow_layers.get(sp[0] as usize).is_none() {
+                continue;
+            }
+            let slot = self.ts_alloc(1);
+            let tw = Self::ts_writes(&self.timing, slot);
+            let layer = &self.shadow_layers[sp[0] as usize];
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
+                timestamp_writes: tw,
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: layer,
@@ -1523,9 +1636,12 @@ impl Gl {
                 p.draw_indexed(first..first + n, 0, base..base + d[8]);
             }
         }
+        let slot = self.ts_alloc(2);
         {
+            let tw = Self::ts_writes(&self.timing, slot);
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
+                timestamp_writes: tw,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
