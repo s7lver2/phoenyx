@@ -20,6 +20,8 @@ import { makeWorldShafts, makeWorldSky } from './games/worldSky.js';
 import { Reflector } from 'three/examples/jsm/objects/Reflector.js';
 import { makePoolWater } from './games/poolWater.js';
 import { makePoolMapWater } from './games/poolMapWater.js';
+import { makeCarpetReflector } from './games/carpet.js';
+import { makePuddles } from './games/puddles.js';
 import { makeParkingAtmosphere } from './games/parkingAtmosphere.js';
 import { LM, lightmapped, makeLightmap, cosTint, poolTile, concrete, parkingDust } from './games/patches.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
@@ -646,6 +648,10 @@ if (sceneId === 'sh-poolmap-water' || sceneId === 'sh-poolmap-water-under') {
   o.position.set(1.2, 0.9, -0.5);
   scene.add(o);
 }
+
+// ---- escenas 'sh-world-carpet' (reflejo del pulido, 22 %) y 'sh-puddles' (charcos del parking) ----
+if (sceneId === 'sh-world-carpet') scene.add(makeCarpetReflector(THREE, Reflector));
+if (sceneId === 'sh-puddles') scene.add(makePuddles(THREE, Reflector));
 
 // ---- escena 'sh-ibl': scene.environment con PMREMGenerator (el entorno de pool.ts / poolmap.ts: caja con tubos de neon) sobre materiales Standard y Physical ----
 if (sceneId === 'sh-ibl' || sceneId === 'sh-ibl-rough') {

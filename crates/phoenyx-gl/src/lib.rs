@@ -217,6 +217,9 @@ fn user_src(id: u32) -> Option<(String, bool)> {
         30 => (include_str!("user/pool_water.wgsl").to_string(), false),
         // agua del mapa de las Poolrooms (poolmap.ts)
         31 => (include_str!("user/pool_map_water.wgsl").to_string(), false),
+        // reflejo bajo la alfombra de world.ts y charcos del parking (Reflector)
+        32 => (include_str!("user/world_carpet.wgsl").to_string(), false),
+        33 => (include_str!("user/parking_puddles.wgsl").to_string(), false),
         _ => return None,
     })
 }

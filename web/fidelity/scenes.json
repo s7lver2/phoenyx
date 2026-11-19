@@ -62,5 +62,7 @@
   { "id": "sh-ibl", "query": "renderer=@R&scene=sh-ibl&fog=exp", "advance": 2, "nota": "scene.environment con PMREMGenerator: reflejos y luz difusa del entorno en Standard y Physical" },
   { "id": "sh-pool-water", "query": "renderer=@R&scene=sh-pool-water&fog=exp", "advance": 2, "nota": "agua de pool.ts: Reflector (render anidado a HalfFloat) + shader PoolWater" },
   { "id": "sh-poolmap-water", "query": "renderer=@R&scene=sh-poolmap-water&fog=exp", "advance": 2, "nota": "agua de poolmap.ts: profundidad y borde por vertice" },
-  { "id": "sh-poolmap-water-under", "query": "renderer=@R&scene=sh-poolmap-water-under&fog=exp", "advance": 2, "nota": "agua de poolmap.ts vista desde abajo (cara trasera; el Reflector no pinta)" }
+  { "id": "sh-poolmap-water-under", "query": "renderer=@R&scene=sh-poolmap-water-under&fog=exp", "advance": 2, "nota": "agua de poolmap.ts vista desde abajo (cara trasera; el Reflector no pinta)" },
+  { "id": "sh-world-carpet", "query": "renderer=@R&scene=sh-world-carpet&fog=exp", "advance": 2, "nota": "reflejo suave bajo la alfombra de world.ts: Reflector transparente con tone mapping" },
+  { "id": "sh-puddles", "query": "renderer=@R&scene=sh-puddles&fog=exp", "advance": 2, "nota": "charcos del parking: decals de agua con Reflector, discard y niebla" }
 ]

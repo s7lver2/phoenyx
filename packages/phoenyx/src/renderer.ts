@@ -18,6 +18,8 @@ import './user-shaders/world-shaft';
 import './user-shaders/world-sky';
 import './user-shaders/pool-water';
 import './user-shaders/poolmap-water';
+import './user-shaders/world-carpet';
+import './user-shaders/puddles';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
 import { Object3D } from './three/core/Object3D.js';
