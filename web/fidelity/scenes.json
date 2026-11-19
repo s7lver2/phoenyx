@@ -44,5 +44,7 @@
   { "id": "sh-parking-atm", "query": "renderer=@R&scene=sh-parking-atm&fog=exp", "advance": 2, "nota": "niebla volumetrica y haz del parking, vistos desde fuera" },
   { "id": "sh-parking-atm-dentro", "query": "renderer=@R&scene=sh-parking-atm&inside=1&fog=exp", "advance": 2, "nota": "la camara dentro del volumen de niebla (gl_FrontFacing y marcha de rayos)" },
   { "id": "sh-remote", "query": "renderer=@R&scene=sh-remote&fog=exp", "advance": 2, "nota": "haces de linterna de jugadores remotos: aditivo, doble cara, normalMatrix" },
-  { "id": "sh-vents", "query": "renderer=@R&scene=sh-vents&fog=exp", "advance": 2, "nota": "gas de los conductos: Points con textura, alfa y rotacion" }
+  { "id": "sh-vents", "query": "renderer=@R&scene=sh-vents&fog=exp", "advance": 2, "nota": "gas de los conductos: Points con textura, alfa y rotacion" },
+  { "id": "sh-dust-cam", "query": "renderer=@R&scene=sh-dust-cam&fog=exp", "advance": 2, "nota": "polvo de game.ts: 1600 motas, aditivo, mod() y haz de la linterna" },
+  { "id": "sh-dust-world", "query": "renderer=@R&scene=sh-dust-world&fog=exp", "advance": 2, "nota": "polvo de world.ts: 700 motas aditivas bajo los focos" }
 ]
