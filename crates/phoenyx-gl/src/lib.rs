@@ -20,6 +20,16 @@ fn entry(b: u32, buf: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 
 /// Textura Rgba32Float cuadrada (tablas LTC de RectAreaLight); se lee con textureLoad.
 /// Textura RGBA8 (sin sRGB) de `w` x `h` para un lightmap.
+/// Aplica el viewport y el scissor (ya recortados) a una pasada.
+fn apply_rects(p: &mut wgpu::RenderPass<'_>, rects: (Option<[u32; 4]>, Option<[u32; 4]>)) {
+    if let Some(v) = rects.0 {
+        p.set_viewport(v[0] as f32, v[1] as f32, v[2] as f32, v[3] as f32, 0.0, 1.0);
+    }
+    if let Some(s) = rects.1 {
+        p.set_scissor_rect(s[0], s[1], s[2], s[3]);
+    }
+}
+
 fn rgba8_view(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, data: &[u8]) -> wgpu::TextureView {
     let t = device.create_texture_with_data(
         queue,
@@ -269,6 +279,12 @@ pub struct Gl {
     lm0: wgpu::TextureView,
     lm1: wgpu::TextureView,
     lm_smp: wgpu::Sampler,
+    /// entorno PMREM (scene.environment): vista negra por defecto, id del render target que lo contiene (u32::MAX = ninguno)
+    env: wgpu::TextureView,
+    env_id: u32,
+    /// viewport y scissor del destino actual (x, y, ancho, alto en filas de memoria del destino); 0 = todo el destino
+    vp: [u32; 4],
+    sc: [u32; 4],
     shadows: Growable,
     shadow_all: wgpu::TextureView,
     shadow_layers: Vec<wgpu::TextureView>,
@@ -364,7 +380,7 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
 
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("phoenyx"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(format!("{}\n{}", include_str!("cube_uv.wgsl"), include_str!("shader.wgsl")).into()),
     });
     let st = |b: u32, ty: wgpu::BufferBindingType, vis: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
         binding: b,
@@ -414,6 +430,12 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 count: None,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 14,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                count: None,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 10,
@@ -498,7 +520,7 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
     // pases de pantalla completa: uniformes (64 vec4), 4 texturas filtrables, una sin filtrado (profundidad) y dos muestreadores
     let post_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("phoenyx-post"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("post.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(format!("{}\n{}", include_str!("cube_uv.wgsl"), include_str!("post.wgsl")).into()),
     });
     let ptex = |b: u32, filterable: bool| wgpu::BindGroupLayoutEntry {
         binding: b,
@@ -561,6 +583,10 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         ltc2: ltc_view(&device, &queue, 1, &[0.0; 4]),
         lm0: rgba8_view(&device, &queue, 1, 1, &[0; 4]),
         lm1: rgba8_view(&device, &queue, 1, 1, &[0; 4]),
+        env: device.create_texture(&wgpu::TextureDescriptor { label: None, size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default()),
+        env_id: u32::MAX,
+        vp: [0; 4],
+        sc: [0; 4],
         lm_smp: device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -681,8 +707,11 @@ impl Gl {
             self.textures.insert(depth_id, dview.clone());
         }
         self.bgs.clear();
+        self.bg = None;
+        self.bg_shadow = None;
         self.targets.insert(color_id, Target { view, depth: dview, fmt, w, h, color_id, depth_id });
-        self.pending.remove(&color_id);
+        // como un framebuffer de GL: la profundidad nueva vale 1 hasta que se limpie
+        self.pending.insert(color_id, Pending { color: None, depth: true });
     }
 
     pub fn drop_target(&mut self, color_id: u32) {
@@ -693,6 +722,8 @@ impl Gl {
                 self.textures.remove(&t.depth_id);
             }
             self.bgs.clear();
+            self.bg = None;
+            self.bg_shadow = None;
         }
         self.pending.remove(&color_id);
         if self.cur == color_id {
@@ -703,6 +734,22 @@ impl Gl {
     /// Destino de los siguientes dibujos: el id de un render target o u32::MAX para la pantalla.
     pub fn set_target(&mut self, id: u32) {
         self.cur = if self.targets.contains_key(&id) { id } else { u32::MAX };
+    }
+
+    /// Viewport y scissor del destino actual, como los de un WebGLRenderTarget (origen abajo a la izquierda = fila 0 de la memoria del destino).
+    /// `vw == 0` quita el viewport (todo el destino); `sw == 0` quita el scissor.
+    pub fn set_viewport(&mut self, vx: u32, vy: u32, vw: u32, vh: u32, sx: u32, sy: u32, sw: u32, sh: u32) {
+        self.vp = [vx, vy, vw, vh];
+        self.sc = [sx, sy, sw, sh];
+    }
+
+    /// Entorno de la escena (scene.environment): id de un render target PMREM (formato CubeUV) o u32::MAX para ninguno.
+    pub fn set_environment(&mut self, id: u32) {
+        if id != self.env_id {
+            self.env_id = id;
+            self.bg = None;
+            self.bg_shadow = None;
+        }
     }
 
     /// `WebGLRenderer.clear`: el siguiente dibujo sobre el destino actual limpia color y/o profundidad.
@@ -1171,6 +1218,7 @@ impl Gl {
             11 => "fs_aodepth",
             12 => "fs_film",
             13 => "fs_vhs",
+            14 => "fs_pmrem_blur",
             _ => return false,
         };
         let mut bl = [0u32; 7];
@@ -1246,6 +1294,7 @@ impl Gl {
             }
         };
         let pend = self.pending.remove(&self.cur).unwrap_or_default();
+        let rects = self.vp_rects();
         if self.post_enc.is_none() {
             self.post_enc = Some(self.device.create_command_encoder(&Default::default()));
         }
@@ -1268,10 +1317,23 @@ impl Gl {
             });
             p.set_pipeline(&self.post_pls[&key].pl);
             p.set_bind_group(0, &bg, &[]);
+            apply_rects(&mut p, rects);
             p.draw(0..3, 0..1);
         }
         self.post_n += 1;
         true
+    }
+
+    /// Viewport y scissor del destino actual (solo render targets), recortados al tamano del destino.
+    fn vp_rects(&self) -> (Option<[u32; 4]>, Option<[u32; 4]>) {
+        let Some(t) = self.targets.get(&self.cur) else { return (None, None) };
+        let clampr = |r: [u32; 4]| -> Option<[u32; 4]> {
+            if r[2] == 0 || r[3] == 0 || r[0] >= t.w || r[1] >= t.h {
+                return None;
+            }
+            Some([r[0], r[1], r[2].min(t.w - r[0]), r[3].min(t.h - r[1])])
+        };
+        (clampr(self.vp), clampr(self.sc))
     }
 
     /// Dibuja un fotograma. Los formatos de los arrays: ver docs/FASE1.md.
@@ -1337,6 +1399,7 @@ impl Gl {
                     wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(&self.lm0) },
                     wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(&self.lm1) },
                     wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(&self.lm_smp) },
+                    wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(self.textures.get(&self.env_id).unwrap_or(&self.env)) },
                     entry(9, &self.shadows.buf),
                     wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&self.shadow_all) },
                 ],
@@ -1358,12 +1421,14 @@ impl Gl {
                     wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(&self.lm0) },
                     wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(&self.lm1) },
                     wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(&self.lm_smp) },
+                    wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(self.textures.get(&self.env_id).unwrap_or(&self.env)) },
                     entry(9, &self.shadows.buf),
                     wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&self.shadow_dummy) },
                 ],
             }));
         }
         let nmain = (main_draws as usize * 12).min(draws.len());
+        let rects = self.vp_rects();
         let (tfmt, tview, tdepth) = match self.targets.get(&self.cur) {
             Some(t) => (t.fmt, Some(t.view.clone()), Some(t.depth.clone())),
             None => (0, None, None),
@@ -1464,6 +1529,7 @@ impl Gl {
                 }),
                 ..Default::default()
             });
+            apply_rects(&mut p, rects);
             p.set_bind_group(0, self.bg.as_ref(), &[]);
             let mut last_key = u32::MAX;
             for (i, d) in draws[..nmain].chunks_exact(12).enumerate() {

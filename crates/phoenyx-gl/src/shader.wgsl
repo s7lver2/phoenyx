@@ -369,6 +369,26 @@ fn DFGApprox(normal: vec3<f32>, viewDir: vec3<f32>, roughness: f32) -> vec2<f32>
     return vec2<f32>(-1.04, 1.04) * a004 + r.zw;
 }
 
+// ---- envmap_physical_pars_fragment (ENVMAP_TYPE_CUBE_UV) ----
+fn inverseTransformDirection(dir: vec3<f32>, matrix: mat4x4<f32>) -> vec3<f32> {
+    return normalize((vec4<f32>(dir, 0.0) * matrix).xyz);
+}
+
+fn getIBLIrradiance(normal: vec3<f32>, intensity: f32) -> vec3<f32> {
+    let worldNormal = inverseTransformDirection(normal, g.view);
+    let envMapColor = cuv_textureCubeUV(env_tex, lm_smp, worldNormal, 1.0);
+    return PI * envMapColor * intensity;
+}
+
+fn getIBLRadiance(viewDir: vec3<f32>, normal: vec3<f32>, roughness: f32, intensity: f32) -> vec3<f32> {
+    var reflectVec = reflect(-viewDir, normal);
+    // mezclar el reflejo con la normal es mas exacto y evita que lo rugoso recoja luz de detras de su plano tangente
+    reflectVec = normalize(mix(reflectVec, normal, roughness * roughness));
+    reflectVec = inverseTransformDirection(reflectVec, g.view);
+    let envMapColor = cuv_textureCubeUV(env_tex, lm_smp, reflectVec, roughness);
+    return envMapColor * intensity;
+}
+
 fn EnvironmentBRDF(normal: vec3<f32>, viewDir: vec3<f32>, specularColor: vec3<f32>, specularF90: f32, roughness: f32) -> vec3<f32> {
     let fab = DFGApprox(normal, viewDir, roughness);
     return specularColor * fab.x + specularF90 * fab.y;
@@ -379,6 +399,8 @@ fn EnvironmentBRDF(normal: vec3<f32>, viewDir: vec3<f32>, specularColor: vec3<f3
 @group(0) @binding(11) var lm0: texture_2d<f32>;
 @group(0) @binding(12) var lm1: texture_2d<f32>;
 @group(0) @binding(13) var lm_smp: sampler;
+// entorno PMREM (scene.environment): textura CubeUV; g.pad1.z = 1 si hay entorno
+@group(0) @binding(14) var env_tex: texture_2d<f32>;
 @group(0) @binding(7) var ltc_1: texture_2d<f32>;
 @group(0) @binding(8) var ltc_2: texture_2d<f32>;
 @group(0) @binding(9) var<storage, read> shadows: array<Shadow>;
@@ -779,9 +801,17 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         // RE_IndirectDiffuse_Physical con la luz ambiente
         var indirectDiffuse = (g.amb.rgb + hemiIrradiance) * BRDF_Lambert(material.diffuseColor);
         // RE_IndirectSpecular_Physical: sin entorno (scene.environment) la radiancia y la irradiancia de entorno son 0
-        let iblIrradiance = vec3<f32>(0.0);
-        let radiance = vec3<f32>(0.0);
-        let clearcoatRadiance = vec3<f32>(0.0);
+        var iblIrradiance = vec3<f32>(0.0);
+        var radiance = vec3<f32>(0.0);
+        var clearcoatRadiance = vec3<f32>(0.0);
+        if (g.pad1.z > 0.5) {
+            // lights_fragment_maps: iblIrradiance, radiance y (con clearcoat) clearcoatRadiance del entorno; m.maps.y = envMapIntensity
+            iblIrradiance = getIBLIrradiance(normal, m.maps.y);
+            radiance = getIBLRadiance(geometryViewDir, normal, material.roughness, m.maps.y);
+            if (hasCC) {
+                clearcoatRadiance = getIBLRadiance(geometryViewDir, nonPerturbedNormal, material.clearcoatRoughness, m.maps.y);
+            }
+        }
         var clearcoatSpecularIndirect = vec3<f32>(0.0);
         var sheenSpecularIndirect = vec3<f32>(0.0);
         if (hasCC) {

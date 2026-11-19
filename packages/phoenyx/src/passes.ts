@@ -10,7 +10,8 @@ export interface PassShaderDef {
   /** uniforme de textura que se lee sin filtrar (profundidad), si lo hay */
   depth?: string;
   /** empaqueta los uniformes del material en floats (cada shader define su orden en post.wgsl) */
-  pack(m: any): number[];
+  /** `ctx.viewport` = viewport del destino actual (x, y, ancho, alto) */
+  pack(m: any, ctx?: { viewport: number[] }): number[];
 }
 
 const registry = new Map<string, PassShaderDef>();
@@ -20,8 +21,14 @@ export function registerPassShader(fragmentShader: string, def: PassShaderDef) {
   registry.set(fragmentShader, def);
 }
 
+const byName = new Map<string, PassShaderDef>();
+/** Asocia un ShaderMaterial por su `name` (los shaders que genera three en tiempo de ejecucion, como el desenfoque de PMREMGenerator). */
+export function registerPassShaderByName(name: string, def: PassShaderDef) {
+  byName.set(name, def);
+}
+
 export function passShaderOf(material: any): PassShaderDef | undefined {
-  return registry.get(material.fragmentShader);
+  return registry.get(material.fragmentShader) ?? (material.name ? byName.get(material.name) : undefined);
 }
 
 const NormalBlending = 1, AdditiveBlending = 2, CustomBlending = 5;

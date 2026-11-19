@@ -153,3 +153,4 @@ export * from './three/constants.js';
 export * from './three/utils.js';
 export * from './three/renderers/shaders/UniformsLib.js';
 export { ShaderChunk } from './shader-chunk';
+export * from './three/extras/PMREMGenerator.js';

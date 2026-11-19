@@ -59,6 +59,8 @@ export interface FrameState {
   clearFlags?: number;
   /** ancho y alto en pixeles del destino (los Points de los shaders de usuario miden su cuadrado en pixeles) */
   size?: [number, number];
+  /** hay scene.environment (textura PMREM en formato CubeUV) */
+  env?: boolean;
   shadow: { enabled: boolean; type: number; autoUpdate: boolean; needsUpdate: boolean };
 }
 
@@ -151,7 +153,7 @@ export class Packer {
           e && std ? e.r * k : 0, e && std ? e.g * k : 0, e && std ? e.b * k : 0, std ? m.roughness : 1,
           std ? m.metalness : 0, m.isMeshNormalMaterial ? 2 : std, m.fog === false || m.isMeshNormalMaterial ? 0 : 1, m.vertexColors ? 1 : 0,
           m.alphaTest > 0 ? m.alphaTest : 0, ns ? ns.x : 1, ns ? ns.y : 1, m.bumpScale ?? 1,
-          mask, 0, 0, 0,
+          mask, std ? (m.envMapIntensity ?? 1) : 0, 0, 0,
           ...uv,
           pa ? pa.id : 0, pa ? nslot : 0, phys ? nslot + (pa ? 1 : 0) : 0, 0,
         );
@@ -432,6 +434,7 @@ export class Packer {
     g[60] = st.size?.[0] ?? 1;
     g[61] = st.size?.[1] ?? 1;
     g[48] = st.clearFlags ?? 3;
+    g[62] = st.env ? 1 : 0; // hay scene.environment (PMREM)
     g[57] = st.shadow.type === 3 ? 2 : st.shadow.type;
 
     return {

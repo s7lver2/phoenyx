@@ -746,3 +746,76 @@ fn fs_vhs(in: VOut) -> @location(0) vec4<f32> {
     col *= 1.0 - uBlack;
     return vec4<f32>(col, 1.0);
 }
+
+// ---- PMREMGenerator._getBlurShader (SphericalGaussianBlur): desenfoque gaussiano esferico sobre la textura CubeUV ----
+// El viewport del destino cubre las 6 caras de un nivel en 3 x 2 teselas de `S` pixeles (u[1].w); el `getDirection` del vertice de
+// three se evalua aqui por pixel (la direccion es lineal en la uv de cada cara, igual que la interpolacion del vertex shader).
+// u[0] = (samples, latitudinal, dTheta, mipInt), u[1] = (poleAxis.xyz, S), u[2..6] = weights[20]
+fn pmrem_direction(uvIn: vec2<f32>, face: f32) -> vec3<f32> {
+    let p = 2.0 * uvIn - 1.0;
+    var d = vec3<f32>(p, 1.0);
+    if (face == 0.0) {
+        d = d.zyx;
+    } else if (face == 1.0) {
+        d = d.xzy;
+        d.x = -d.x;
+        d.z = -d.z;
+    } else if (face == 2.0) {
+        d.x = -d.x;
+    } else if (face == 3.0) {
+        d = d.zyx;
+        d.x = -d.x;
+        d.z = -d.z;
+    } else if (face == 4.0) {
+        d = d.xzy;
+        d.x = -d.x;
+        d.y = -d.y;
+    } else if (face == 5.0) {
+        d.z = -d.z;
+    }
+    return d;
+}
+
+fn pmrem_weight(i: i32) -> f32 {
+    return u[2 + i / 4][i % 4];
+}
+
+fn pmrem_sample(dir: vec3<f32>, theta: f32, axis: vec3<f32>, mipInt: f32) -> vec3<f32> {
+    let cosTheta = cos(theta);
+    // rotacion de Rodrigues
+    let sampleDirection = dir * cosTheta + cross(axis, dir) * sin(theta) + axis * dot(axis, dir) * (1.0 - cosTheta);
+    return cuv_bilinear(t0, sl, sampleDirection, mipInt);
+}
+
+@fragment
+fn fs_pmrem_blur(in: VOut) -> @location(0) vec4<f32> {
+    let samples = i32(u[0].x);
+    let latitudinal = u[0].y > 0.5;
+    let dTheta = u[0].z;
+    let mipInt = u[0].w;
+    let poleAxis = u[1].xyz;
+    let S = u[1].w;
+    let t = in.vuv * vec2<f32>(3.0, 2.0);
+    let col = min(floor(t.x), 2.0);
+    let row = min(floor(t.y), 1.0);
+    let face = col + 3.0 * row;
+    let local = t - vec2<f32>(col, row);
+    let texel = 1.0 / (S - 2.0);
+    let uvq = vec2<f32>(-texel) + (1.0 + 2.0 * texel) * local;
+    let dir = pmrem_direction(uvq, face);
+    var axis = select(cross(poleAxis, dir), poleAxis, latitudinal);
+    if (all(axis == vec3<f32>(0.0))) {
+        axis = vec3<f32>(dir.z, 0.0, -dir.x);
+    }
+    axis = normalize(axis);
+    var rgb = pmrem_weight(0) * pmrem_sample(dir, 0.0, axis, mipInt);
+    for (var i = 1; i < 20; i = i + 1) {
+        if (i >= samples) {
+            break;
+        }
+        let theta = dTheta * f32(i);
+        rgb += pmrem_weight(i) * pmrem_sample(dir, -1.0 * theta, axis, mipInt);
+        rgb += pmrem_weight(i) * pmrem_sample(dir, theta, axis, mipInt);
+    }
+    return vec4<f32>(rgb, 1.0);
+}

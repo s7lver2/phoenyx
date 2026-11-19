@@ -626,6 +626,38 @@ if (sceneId === 'sh-dust-world') scene.add(makeWorldDust(THREE, { t: 13.9 }));
 if (sceneId === 'sh-world-shaft') scene.add(makeWorldShafts(THREE));
 if (sceneId === 'sh-world-sky') scene.add(makeWorldSky(THREE, { t: 9 }));
 
+// ---- escena 'sh-ibl': scene.environment con PMREMGenerator (el entorno de pool.ts / poolmap.ts: caja con tubos de neon) sobre materiales Standard y Physical ----
+if (sceneId === 'sh-ibl' || sceneId === 'sh-ibl-rough') {
+  const mats = [
+    new THREE.MeshStandardMaterial({ color: 0xb09050, roughness: 0.15, metalness: 0 }),
+    new THREE.MeshStandardMaterial({ color: 0xd0d0d0, roughness: 0.35, metalness: 1 }),
+    new THREE.MeshStandardMaterial({ color: 0x4060d0, roughness: 0.8, metalness: 0, envMapIntensity: 1.7 }),
+    new THREE.MeshPhysicalMaterial({ color: 0x3cc6c0, roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.7 }),
+    new THREE.MeshPhysicalMaterial({ color: 0xc04060, roughness: 0.34, clearcoat: 0.6, clearcoatRoughness: 0.22, sheen: 0.4, sheenColor: new THREE.Color(0xe0a0b0), envMapIntensity: 0.3 }),
+    new THREE.MeshPhysicalMaterial({ color: 0x808080, roughness: 0.6, specularIntensity: 0.5, clearcoat: 0.7, clearcoatRoughness: 0.28, envMapIntensity: 1.7 }),
+  ];
+  mats.forEach((m, i) => {
+    const o = new THREE.Mesh(new THREE.SphereGeometry(0.55, 40, 24), m);
+    o.position.set(-3.5 + i * 1.4, 1.0, 0.2);
+    scene.add(o);
+  });
+  let envDone = false;
+  draw = () => {
+    if (!envDone) {
+      envDone = true;
+      // el entorno del juego: caja gris con tubos de neon calidos, horneada una vez
+      const env = new THREE.Scene(), em = new THREE.MeshBasicMaterial({ color: 0x8f9892, side: THREE.BackSide });
+      env.add(new THREE.Mesh(new THREE.BoxGeometry(30, 10, 30), em));
+      const nm = new THREE.MeshBasicMaterial({ color: 0xfffaea }), ng = new THREE.BoxGeometry(3.4, 0.1, 0.7);
+      for (const x of [-9, -3, 3, 9]) for (const z of [-9, -3, 3, 9]) { const n = new THREE.Mesh(ng, nm); n.position.set(x, 4.8, z); env.add(n); }
+      const gen = new THREE.PMREMGenerator(renderer);
+      scene.environment = gen.fromScene(env, 0.04).texture;
+      gen.dispose();
+    }
+    renderer.render(scene, camera);
+  };
+}
+
 // ---- escena 'sh-physical': MeshPhysicalMaterial (clearcoat, sheen, specularIntensity, ior), solo con luces directas ----
 if (sceneId === 'sh-physical') {
   const mats = [

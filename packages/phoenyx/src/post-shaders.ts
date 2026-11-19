@@ -8,7 +8,7 @@ import { UnrealBloomPass } from './jsm/postprocessing/UnrealBloomPass.js';
 import { Vector2 } from 'three';
 import { GTAOShader, GTAODepthShader, GTAOBlendShader } from './jsm/shaders/GTAOShader.js';
 import { PoissonDenoiseShader } from './jsm/shaders/PoissonDenoiseShader.js';
-import { registerPassShader } from './passes';
+import { registerPassShader, registerPassShaderByName } from './passes';
 import './user-shaders/vhs';
 
 // id 0: fs_copy
@@ -115,4 +115,19 @@ registerPassShader(SMAABlendShader.fragmentShader, {
   id: 7,
   tex: ['tDiffuse', 'tColor'],
   pack: (m) => [m.uniforms.resolution.value.x, m.uniforms.resolution.value.y, 0, 0],
+});
+
+// id 14: PMREMGenerator (SphericalGaussianBlur): desenfoque de la textura CubeUV nivel a nivel. El material lo crea three en tiempo de ejecucion.
+// u[0] = (samples, latitudinal, dTheta, mipInt), u[1] = (poleAxis.xyz, tamano de la cara de salida), u[2..6] = weights[20]
+registerPassShaderByName('SphericalGaussianBlur', {
+  id: 14,
+  tex: ['envMap'],
+  pack: (m, ctx) => {
+    const u = m.uniforms, p = u.poleAxis.value, w = u.weights.value;
+    // el viewport del destino cubre 3 x 2 caras de `S` pixeles
+    const S = ctx && ctx.viewport[2] ? ctx.viewport[2] / 3 : 0;
+    const out = [u.samples.value, u.latitudinal.value ? 1 : 0, u.dTheta.value, u.mipInt.value, p.x, p.y, p.z, S];
+    for (let i = 0; i < 20; i++) out.push(w[i] ?? 0);
+    return out;
+  },
 });

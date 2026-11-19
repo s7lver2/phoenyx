@@ -18,7 +18,7 @@ import './user-shaders/world-shaft';
 import './user-shaders/world-sky';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
-import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace } from './three/constants.js';
+import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace, CubeUVReflectionMapping } from './three/constants.js';
 
 const warned = new Set<string>();
 const warnOnce = (k: string, msg: string) => {
@@ -124,6 +124,15 @@ export class WebGLRenderer {
   getRenderTarget() {
     return this.rt;
   }
+  getActiveCubeFace() {
+    return 0;
+  }
+  getActiveMipmapLevel() {
+    return 0;
+  }
+  /** WebGLRenderer.compile: la GPU compila los pipelines al primer dibujo. */
+  compile(_scene?: any, _camera?: any) {}
+  async compileAsync(_scene?: any, _camera?: any) {}
   /** Lleva a la GPU el destino actual (crea o redimensiona el RT) y evita leer su textura mientras se dibuja en ella. */
   private syncTarget() {
     if (!this.gl) return;
@@ -131,9 +140,13 @@ export class WebGLRenderer {
       const id = this.textures.target(this.rt);
       this.textures.avoid = id;
       this.gl.set_target(id);
+      // viewport (siempre) y scissor (con scissorTest) del WebGLRenderTarget: PMREMGenerator pinta cada cara en su tesela
+      const v = this.rt.viewport, s = this.rt.scissor;
+      this.gl.set_viewport(v.x, v.y, v.z, v.w, this.rt.scissorTest ? s.x : 0, this.rt.scissorTest ? s.y : 0, this.rt.scissorTest ? s.z : 0, this.rt.scissorTest ? s.w : 0);
     } else {
       this.textures.avoid = 0;
       this.gl.set_target(0xffffffff);
+      this.gl.set_viewport(0, 0, 0, 0, 0, 0, 0, 0);
     }
   }
   /** WebGLRenderer.clear: el siguiente dibujo en el destino actual limpia color y/o profundidad. */
@@ -353,7 +366,8 @@ export class WebGLRenderer {
     const tex = def.tex.map((n) => this.textures.idOf(m.uniforms[n]?.value));
     while (tex.length < 5) tex.push(0);
     tex.push(def.depth ? this.textures.idOf(m.uniforms[def.depth]?.value) : 0);
-    this.emitPass(def.id, new Float32Array(def.pack(m)), new Uint32Array(blendOf(m)), new Uint32Array(tex));
+    const vp = this.rt ? this.rt.viewport : null;
+    this.emitPass(def.id, new Float32Array(def.pack(m, { viewport: vp ? [vp.x, vp.y, vp.z, vp.w] : [0, 0, 0, 0] })), new Uint32Array(blendOf(m)), new Uint32Array(tex));
     const err = this.gl.take_error();
     if (err) console.error('[phoenyx] GPU:', err);
   }
@@ -384,8 +398,12 @@ export class WebGLRenderer {
     const alpha = scene.background && scene.background.isColor ? 1 : this.clearAlpha;
     const tm = !rtOut && this.toneMapping === ACESFilmicToneMapping ? 1 : 0;
     if (!rtOut && this.toneMapping !== NoToneMapping && this.toneMapping !== ACESFilmicToneMapping) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
+    // scene.environment (textura PMREM en formato CubeUV, de PMREMGenerator): solo la usan los materiales estandar
+    const envTex = scene.isScene ? scene.environment : null;
+    const envId = envTex && envTex.mapping === CubeUVReflectionMapping ? this.textures.idOf(envTex) : 0;
+    this.gl.set_environment(envId ? envId : 0xffffffff);
     this.renderCount++;
-    const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, // con scene.background (Color) three limpia siempre, segun autoClearColor/autoClearDepth aunque autoClear sea false
+    const p = this.packer.pack(scene, camera, { env: !!envId, exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, // con scene.background (Color) three limpia siempre, segun autoClearColor/autoClearDepth aunque autoClear sea false
  clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, size: rtOut ? [Math.max(1, Math.floor(this.rt.width)), Math.max(1, Math.floor(this.rt.height))] : [this.domElement.width, this.domElement.height], shadow: this.shadowMap }, (g, slots, lm) => this.geomId(g, slots, lm), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m), (m) => this.patchInfo(m));
     // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
     if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {
