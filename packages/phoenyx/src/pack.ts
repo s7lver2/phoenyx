@@ -229,8 +229,8 @@ export class Packer {
         matData.push(...user.values);
         while (matData.length < nslot * MATERIAL_F) matData.push(0);
       } else mi = matIndex(m);
-      const ii = o.isInstancedMesh && !user ? instInfo(o) : null;
-      if (o.isInstancedMesh && !user && (!ii || ii.count === 0)) continue;
+      const ii = o.isInstancedMesh && !(user && o.isPoints) ? instInfo(o) : null;
+      if (o.isInstancedMesh && !(user && o.isPoints) && (!ii || ii.count === 0)) continue;
       // malla con piel: su tramo de huesos (0 = sin piel; sin skinIndex/skinWeight se dibuja como Mesh)
       const bk = o.isSkinnedMesh && it.geometry.attributes.skinIndex && it.geometry.attributes.skinWeight ? boneInfo(o) : 0;
       // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
@@ -248,8 +248,10 @@ export class Packer {
       const emit = (fl: number) => {
         if (user) {
           // bit 1024: dibujo de usuario (bit 2048: Points); la mezcla va empaquetada en las palabras 9 y 11 y el id del shader en la 10
-          draws.push(gid, no, mi, fl | 1024 | (o.isPoints ? 2048 : 0), first, idx, tk, 0xffffffff, 1, user.b0, user.id, user.b1);
-          if (!o.isPoints) triangles += idx / 3;
+          // una malla instanciada con ShaderMaterial lleva su malla y su numero de instancias (palabras 7 y 8); la matriz la lee el WGSL con instMat
+          const n = ii ? Math.min(65535, ii.count) : 1;
+          draws.push(gid, no, mi, fl | 1024 | (o.isPoints ? 2048 : 0), first, idx, tk, ii ? ii.id : 0xffffffff, n, user.b0, user.id, user.b1);
+          if (!o.isPoints) triangles += (idx / 3) * n;
         } else if (!ii) {
           draws.push(gid, no, mi, fl, first, idx, tk, 0xffffffff, 1, 0, 0, bk);
           triangles += idx / 3;

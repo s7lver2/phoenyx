@@ -29,6 +29,7 @@ struct Obj {
 @group(0) @binding(1) var<storage, read> objects: array<Obj>;
 @group(0) @binding(2) var<storage, read> uu: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read> draws: array<vec4<u32>>;
+@group(0) @binding(5) var<storage, read> inst_mats: array<mat4x4<f32>>;
 
 @group(1) @binding(0) var t0: texture_2d<f32>;
 @group(1) @binding(1) var t1: texture_2d<f32>;
@@ -44,6 +45,15 @@ struct Obj {
 /// vec4 `k` de los uniformes del dibujo `di` (k = 0 es la cabecera: x = fog).
 fn ub(di: u32, k: u32) -> vec4<f32> {
     return uu[draws[di * 3u].z * 16u + k];
+}
+
+/// Matriz de la instancia `k` del dibujo `di` (la identidad si no es una malla instanciada): `instanceMatrix` de three.
+fn instMat(di: u32, k: u32) -> mat4x4<f32> {
+    let s = draws[di * 3u + 1u].w;
+    if (s == 0xFFFFFFFFu) {
+        return mat4x4<f32>(vec4<f32>(1.0, 0.0, 0.0, 0.0), vec4<f32>(0.0, 1.0, 0.0, 0.0), vec4<f32>(0.0, 0.0, 1.0, 0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0));
+    }
+    return inst_mats[s + k];
 }
 
 fn modelOf(di: u32) -> mat4x4<f32> { return objects[draws[di * 3u].y].model; }
@@ -105,4 +115,10 @@ fn fog_out(c: vec3<f32>, depth: f32, fog_on: f32) -> vec3<f32> {
         return mix(c, g.fogc.rgb, f);
     }
     return c;
+}
+
+/// smoothstep de GLSL: admite bordes en cualquier orden (en WGSL low >= high es indeterminado).
+fn sstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
 }

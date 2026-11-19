@@ -175,6 +175,8 @@ fn user_src(id: u32) -> Option<(String, bool)> {
         6 => (include_str!("user/vents_gas.wgsl").to_string(), true),
         7 => (include_str!("user/dust_cam.wgsl").to_string(), true),
         8 => (include_str!("user/dust_world.wgsl").to_string(), true),
+        9 => (include_str!("user/world_shaft.wgsl").to_string(), false),
+        10 => (include_str!("user/world_sky.wgsl").to_string(), false),
         _ => return None,
     })
 }
@@ -1221,8 +1223,17 @@ impl Gl {
         // la malla instanciada se resuelve a su plaza de la reserva; el indice de dibujo va en los 16 bits altos de la instancia
         let mut dr = draws.to_vec();
         for c in dr.chunks_exact_mut(12) {
-            // dibujo de usuario (ShaderMaterial): sin huesos ni instancias
+            // dibujo de usuario (ShaderMaterial): sin huesos; si es instanciado (c[7] = malla), solo se resuelve su plaza (c[9] lleva la mezcla)
             if c[3] & 1024 != 0 {
+                if c[7] != u32::MAX {
+                    match self.slots.get(&c[7]) {
+                        Some(sl) => {
+                            c[7] = sl.offset;
+                            c[8] = c[8].min(sl.n);
+                        }
+                        None => c[8] = 0,
+                    }
+                }
                 continue;
             }
             // tramo de huesos de una malla con piel: c[11] = su clave; el shader recibe offset + 1 (0 = sin piel)

@@ -13,6 +13,8 @@ import './user-shaders/remote';
 import './user-shaders/vents';
 import './user-shaders/dust-cam';
 import './user-shaders/dust-world';
+import './user-shaders/world-shaft';
+import './user-shaders/world-sky';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
 import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace } from './three/constants.js';

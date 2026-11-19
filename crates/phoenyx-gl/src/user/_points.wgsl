@@ -33,9 +33,3 @@ fn point_clip(mv: vec4<f32>, size: f32, c: vec2<f32>) -> vec4<f32> {
     }
     return clip;
 }
-
-/// smoothstep de GLSL: admite bordes en cualquier orden (en WGSL low >= high es indeterminado).
-fn sstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
-    return t * t * (3.0 - 2.0 * t);
-}

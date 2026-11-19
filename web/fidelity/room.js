@@ -16,6 +16,7 @@ import { makeJet } from './games/waterjet.js';
 import { makeRemoteBeams } from './games/remoteBeams.js';
 import { makeVentGas } from './games/vents.js';
 import { makeCamDust, makeWorldDust } from './games/dust.js';
+import { makeWorldShafts, makeWorldSky } from './games/worldSky.js';
 import { makeParkingAtmosphere } from './games/parkingAtmosphere.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -619,6 +620,10 @@ if (sceneId === 'sh-vents') scene.add(makeVentGas(THREE, { t: 11.7 }));
 // ---- escenas 'sh-dust-cam' y 'sh-dust-world': el polvo de game.ts (caja de 8 m con la camara) y el de world.ts (bajo cada foco) ----
 if (sceneId === 'sh-dust-cam') scene.add(makeCamDust(THREE, { cam: camera.position, t: 7.3, beam: 1, px: 720 * 0.02 }));
 if (sceneId === 'sh-dust-world') scene.add(makeWorldDust(THREE, { t: 13.9 }));
+
+// ---- escenas 'sh-world-shaft' (haces de los paneles: malla instanciada aditiva de doble cara) y 'sh-world-sky' (cupula con nubes y posterizado) ----
+if (sceneId === 'sh-world-shaft') scene.add(makeWorldShafts(THREE));
+if (sceneId === 'sh-world-sky') scene.add(makeWorldSky(THREE, { t: 9 }));
 
 // ---- escena 'sh-vhs': RenderPass -> OutputPass -> FilmShader -> VhsShader del juego, con el tiempo fijo ----
 if (sceneId === 'sh-vhs') {
