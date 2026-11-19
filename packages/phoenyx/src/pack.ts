@@ -231,7 +231,7 @@ export class Packer {
       const gp = it.geometry.attributes.position;
       if (!gp || gp.count === 0) continue;
       // ShaderMaterial del juego: dibujo de usuario (WGSL portado, ver user-shaders/); sin version portada se avisa y se omite
-      if (ov && (o.isPoints || o.isLine)) continue; // los puntos no entran en la pasada de normales
+      if (ov && (o.isPoints || o.isLine || o.isSprite)) continue; // los puntos, lineas y sprites no entran en la pasada de normales
       const user = (m.isShaderMaterial || m.isPointsMaterial || m.isSpriteMaterial || m.isLineBasicMaterial) && !ov ? userInfo(m) : null;
       if (m.isShaderMaterial && !ov && !user) { warnOnce('shader-' + (m.name || m.uuid), 'ShaderMaterial sin version WGSL registrada: no se dibuja'); continue; }
       if (!user && !m.color && !m.isMeshNormalMaterial) { warnOnce(m.type, `${m.type} aun no esta soportado y se omite`); continue; }

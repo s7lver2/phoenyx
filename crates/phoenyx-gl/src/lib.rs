@@ -9,9 +9,8 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Floats por entrada de cada array de entrada (deben coincidir con shader.wgsl y con pack.ts).
 pub const GLOBALS_F: usize = 64;
 
-thread_local! {
-    static STATUS: std::cell::RefCell<(bool, String)> = const { std::cell::RefCell::new((false, String::new())) };
-}
+/// Estado de un dispositivo: (perdido, ultimo error). Uno por `Gl`: el renderer principal convive con los de iconos y avatares.
+type Status = std::sync::Arc<std::sync::Mutex<(bool, String)>>;
 
 fn entry(b: u32, buf: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry { binding: b, resource: buf.as_entire_binding() }
@@ -325,6 +324,7 @@ pub struct Gl {
     post_uniforms: wgpu::Buffer,
     /// pases de pantalla completa grabados y aun sin enviar (un solo encoder y un solo submit por tanda)
     post_enc: Option<wgpu::CommandEncoder>,
+    status: Status,
     post_n: u32,
     post_frame: Option<wgpu::SurfaceTexture>,
     post_pls: HashMap<(u32, [u32; 7], u32), PassPl>,
@@ -369,11 +369,14 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         .await
         .map_err(err)?;
     let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default()).await.map_err(err)?;
-    device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
-        STATUS.with(|s| s.borrow_mut().1 = e.to_string());
+    let status: Status = Default::default();
+    let st_err = status.clone();
+    device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
+        st_err.lock().unwrap().1 = e.to_string();
     }));
-    device.set_device_lost_callback(|reason, msg| {
-        STATUS.with(|s| *s.borrow_mut() = (true, format!("{reason:?}: {msg}")));
+    let st_lost = status.clone();
+    device.set_device_lost_callback(move |reason, msg| {
+        *st_lost.lock().unwrap() = (true, format!("{reason:?}: {msg}"));
     });
 
     // Formato sin conversion sRGB: la codificacion de salida la hace el shader, como three en WebGL.
@@ -640,6 +643,7 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         post_bgl,
         post_uniforms,
         post_enc: None,
+        status,
         post_n: 0,
         post_frame: None,
         post_pls: HashMap::new(),
@@ -1001,12 +1005,17 @@ impl Gl {
         self.geom_bgs.remove(&id);
     }
 
+    /// Destruye el dispositivo (los renderers secundarios, como los de iconos, no lo dejan vivo hasta el GC).
+    pub fn destroy(&self) {
+        self.device.destroy();
+    }
+
     pub fn is_lost(&self) -> bool {
-        STATUS.with(|s| s.borrow().0)
+        self.status.lock().unwrap().0
     }
 
     pub fn take_error(&self) -> String {
-        STATUS.with(|s| std::mem::take(&mut s.borrow_mut().1))
+        std::mem::take(&mut self.status.lock().unwrap().1)
     }
 
     /// `[dibujos, triangulos, geometrias]` del ultimo fotograma.

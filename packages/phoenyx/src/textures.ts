@@ -25,6 +25,10 @@ export class TextureCache {
   private rtOf = new WeakMap<object, object>();
 
   constructor(private gl: any) {}
+  /** El renderer se libero: los dispose de texturas y render targets posteriores ya no tocan la GPU. */
+  release() {
+    this.gl = null;
+  }
 
   /** Pixeles RGBA de 8 bits con las filas en el orden de `flipY`; null si la imagen aun no esta lista. */
   private pixels(tex: any): { w: number; h: number; data: Uint8Array } | null {
@@ -88,7 +92,7 @@ export class TextureCache {
       this.rtOf.set(rt.texture, rt);
       rt.addEventListener('dispose', () => {
         if (this.rts.get(rt) !== r) return;
-        this.gl.drop_target(r.id);
+        this.gl?.drop_target(r.id);
         this.rts.delete(rt);
         this.count--;
       });
@@ -117,7 +121,7 @@ export class TextureCache {
       this.count++;
       tex.addEventListener('dispose', () => {
         if (this.ids.get(tex) !== r) return;
-        this.gl.drop_texture(r.id);
+        this.gl?.drop_texture(r.id);
         this.ids.delete(tex);
         this.count--;
       });

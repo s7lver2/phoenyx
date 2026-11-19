@@ -95,7 +95,11 @@ export class WebGLRenderer {
       const url = wasmUrl();
       await init(url ? { module_or_path: url } : undefined);
       const gl = await create(this.domElement);
-      if (this.disposed) return;
+      if (this.disposed) {
+        gl.destroy();
+        gl.free();
+        return;
+      }
       this.gl = gl;
       this.textures = new TextureCache(gl);
     })();
@@ -517,7 +521,11 @@ export class WebGLRenderer {
   dispose() {
     this.setAnimationLoop(null);
     this.disposed = true;
-    this.gl?.free?.();
+    this.textures?.release();
+    if (this.gl) {
+      this.gl.destroy();
+      this.gl.free();
+    }
     this.gl = null;
   }
 }
