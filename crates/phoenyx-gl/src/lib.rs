@@ -374,7 +374,7 @@ fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
 }
 
 #[wasm_bindgen]
-pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
+pub async fn create(canvas: web_sys::HtmlCanvasElement, alpha: bool) -> Result<Gl, JsValue> {
     console_error_panic_hook::set_once();
     let (w, h) = (canvas.width().max(1), canvas.height().max(1));
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -406,6 +406,10 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         cfg.format = f;
     }
     cfg.present_mode = wgpu::PresentMode::AutoVsync;
+    // `alpha: true` (como WebGLRenderer): el lienzo se compone con la pagina con su transparencia (alfa premultiplicado)
+    if alpha && caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+        cfg.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
+    }
     surface.configure(&device, &cfg);
 
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {

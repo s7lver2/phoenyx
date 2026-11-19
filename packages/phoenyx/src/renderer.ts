@@ -91,10 +91,11 @@ export class WebGLRenderer {
 
   constructor(params: { canvas?: HTMLCanvasElement; antialias?: boolean; alpha?: boolean; powerPreference?: string } = {}) {
     this.domElement = params.canvas ?? document.createElement('canvas');
+    if (params.alpha) this.clearAlpha = 0; // como WebGLRenderer: con `alpha: true` el fondo empieza transparente
     this.ready = (async () => {
       const url = wasmUrl();
       await init(url ? { module_or_path: url } : undefined);
-      const gl = await create(this.domElement);
+      const gl = await create(this.domElement, !!params.alpha);
       if (this.disposed) {
         gl.destroy();
         gl.free();
