@@ -10,6 +10,7 @@ import './user-shaders/prueba';
 import './user-shaders/waterjet';
 import './user-shaders/parking-atmosphere';
 import './user-shaders/remote';
+import './user-shaders/vents';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
 import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace } from './three/constants.js';

@@ -14,6 +14,7 @@ import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { makePrueba } from './games/prueba.js';
 import { makeJet } from './games/waterjet.js';
 import { makeRemoteBeams } from './games/remoteBeams.js';
+import { makeVentGas } from './games/vents.js';
 import { makeParkingAtmosphere } from './games/parkingAtmosphere.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -610,6 +611,9 @@ if (sceneId === 'sh-remote') {
   b.rotation.set(0.2, -0.6, 0);
   scene.add(a, b);
 }
+
+// ---- escena 'sh-vents': el gas de los conductos (Points con textura de nube, alfa y rotacion por particula), con una semilla fija ----
+if (sceneId === 'sh-vents') scene.add(makeVentGas(THREE, { t: 11.7 }));
 
 // ---- escena 'sh-vhs': RenderPass -> OutputPass -> FilmShader -> VhsShader del juego, con el tiempo fijo ----
 if (sceneId === 'sh-vhs') {
