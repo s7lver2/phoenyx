@@ -65,7 +65,8 @@ profile.samples.forEach((id, i) => {
   self.set(key, (self.get(key) ?? 0) + (dt[i] ?? 0));
 });
 const total = [...self.values()].reduce((a, b) => a + b, 0);
-console.log(`escena ${sceneId} x${throttle}: ${nFrames} fotogramas, ${(total / 1000 / nFrames).toFixed(2)} ms de CPU por fotograma`);
+const idle = self.get("(idle) :0") ?? 0;
+console.log(`escena ${sceneId} x${throttle}: ${nFrames} fotogramas, ${((total - idle) / 1000 / nFrames).toFixed(2)} ms de CPU ocupada por fotograma (inactivo ${(idle / 1000 / nFrames).toFixed(2)})`);
 for (const [k, v] of [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, top)) console.log(`${(v / 1000 / nFrames).toFixed(3).padStart(8)} ms  ${k}`);
 // quien llama (primer ancestro que no es la propia funcion) con tiempo propio+hijos de la funcion --callers
 const fn = arg('callers', '');
