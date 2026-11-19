@@ -1144,6 +1144,11 @@ impl Gl {
     }
 
     /// Si el adaptador permite el culling y LOD en GPU (INDIRECT_FIRST_INSTANCE).
+    /// Cuántos pipelines de dibujo hay creados (depuración: un salto al entrar en un sitio nuevo es una compilación).
+    pub fn pipeline_count(&self) -> u32 {
+        (self.pipelines.len() + self.shadow_pipelines.len()) as u32
+    }
+
     pub fn gpu_ok(&self) -> bool {
         self.gpu_ok
     }
