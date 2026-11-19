@@ -17,6 +17,8 @@ import { makeRemoteBeams } from './games/remoteBeams.js';
 import { makeVentGas } from './games/vents.js';
 import { makeCamDust, makeWorldDust } from './games/dust.js';
 import { makeWorldShafts, makeWorldSky } from './games/worldSky.js';
+import { Reflector } from 'three/examples/jsm/objects/Reflector.js';
+import { makePoolWater } from './games/poolWater.js';
 import { makeParkingAtmosphere } from './games/parkingAtmosphere.js';
 import { LM, lightmapped, makeLightmap, cosTint, poolTile, concrete, parkingDust } from './games/patches.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
@@ -625,6 +627,14 @@ if (sceneId === 'sh-dust-world') scene.add(makeWorldDust(THREE, { t: 13.9 }));
 // ---- escenas 'sh-world-shaft' (haces de los paneles: malla instanciada aditiva de doble cara) y 'sh-world-sky' (cupula con nubes y posterizado) ----
 if (sceneId === 'sh-world-shaft') scene.add(makeWorldShafts(THREE));
 if (sceneId === 'sh-world-sky') scene.add(makeWorldSky(THREE, { t: 9 }));
+
+// ---- escena 'sh-pool-water': el agua de pool.ts (Reflector + PoolWater) sobre la sala de pruebas ----
+if (sceneId === 'sh-pool-water') {
+  scene.add(makePoolWater(THREE, Reflector, { cam: camera.position }));
+  const o = new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 16), new THREE.MeshStandardMaterial({ color: 0xc04060, roughness: 0.4 }));
+  o.position.set(-1.2, 0.9, 0.5);
+  scene.add(o);
+}
 
 // ---- escena 'sh-ibl': scene.environment con PMREMGenerator (el entorno de pool.ts / poolmap.ts: caja con tubos de neon) sobre materiales Standard y Physical ----
 if (sceneId === 'sh-ibl' || sceneId === 'sh-ibl-rough') {

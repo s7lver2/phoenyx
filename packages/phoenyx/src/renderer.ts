@@ -16,8 +16,12 @@ import './user-shaders/dust-cam';
 import './user-shaders/dust-world';
 import './user-shaders/world-shaft';
 import './user-shaders/world-sky';
+import './user-shaders/pool-water';
 import { Color } from './three/math/Color.js';
 import { BufferGeometry } from './three/core/BufferGeometry.js';
+import { Object3D } from './three/core/Object3D.js';
+import { Frustum } from './three/math/Frustum.js';
+import { Matrix4 } from './three/math/Matrix4.js';
 import { ACESFilmicToneMapping, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace, CubeUVReflectionMapping } from './three/constants.js';
 
 const warned = new Set<string>();
@@ -68,6 +72,13 @@ export class WebGLRenderer {
   shadowMap = { enabled: false, autoUpdate: true, needsUpdate: false, type: 1 };
   private disposed = false;
   private rt: any = null;
+  /** profundidad de render() anidados (el Reflector dibuja la escena dentro de su onBeforeRender) */
+  private depth = 0;
+  private hookFrustum = new Frustum();
+  private hookMatrix = new Matrix4();
+  /** resguardos de la parte de WebGLRenderer que toca el Reflector: sin XR; el estado de GL lo lleva phoenyx-gl */
+  xr = { enabled: false };
+  state = { buffers: { depth: { setMask(_m: boolean) {} } }, viewport(_v: any) {} };
 
   constructor(params: { canvas?: HTMLCanvasElement; antialias?: boolean; alpha?: boolean; powerPreference?: string } = {}) {
     this.domElement = params.canvas ?? document.createElement('canvas');
@@ -372,6 +383,29 @@ export class WebGLRenderer {
     if (err) console.error('[phoenyx] GPU:', err);
   }
 
+  /** Llama a `onBeforeRender` de los objetos que lo definen y pasan visibilidad, capas y frustum (como projectObject de three). */
+  private runBeforeRender(scene: any, camera: any) {
+    if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
+    if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
+    let frustumReady = false;
+    const visit = (o: any) => {
+      if (o.visible === false) return;
+      if (o.onBeforeRender !== Object3D.prototype.onBeforeRender && o.layers.test(camera.layers)) {
+        let ok = true;
+        if (o.frustumCulled && (o.isMesh || o.isLine || o.isPoints)) {
+          if (!frustumReady) {
+            this.hookFrustum.setFromProjectionMatrix(this.hookMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+            frustumReady = true;
+          }
+          ok = this.hookFrustum.intersectsObject(o);
+        }
+        if (ok) o.onBeforeRender(this, scene, camera, o.geometry, o.material, null);
+      }
+      for (const c of o.children) visit(c);
+    };
+    visit(scene);
+  }
+
   render(scene: any, camera: any) {
     if (!this.gl) return;
     if (scene.isMesh && scene.material?.isShaderMaterial) return this.renderPass(scene.material);
@@ -385,10 +419,18 @@ export class WebGLRenderer {
       if (!this.lostReported) (this.lostReported = true), console.error('[phoenyx] dispositivo GPU perdido:', this.gl.take_error());
       return;
     }
+    // onBeforeRender de los objetos visibles (el Reflector dibuja aqui su textura): antes de empaquetar, para que el render anidado
+    // termine entero (su propio pack y su propio frame) y deje el destino como estaba
+    this.depth++;
+    try {
+      this.runBeforeRender(scene, camera);
+    } finally {
+      this.depth--;
+    }
     this.gl.resize(this.domElement.width, this.domElement.height);
     this.syncTarget();
     const rtOut = !!this.rt;
-    if (this.info.autoReset) this.info.reset();
+    if (this.info.autoReset && this.depth === 0) this.info.reset();
     // fondo: scene.background (Color) o el color de limpieza, convertido al espacio de salida como hace three
     const rgb = { r: 0, g: 0, b: 0 };
     const forceClear = !!(scene.background && scene.background.isColor);

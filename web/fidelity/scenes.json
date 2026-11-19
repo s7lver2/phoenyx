@@ -59,5 +59,6 @@
   { "id": "sh-line", "query": "renderer=@R&scene=sh-line&fog=exp", "advance": 2, "nota": "LineBasicMaterial: segmentos, tira con color por vertice, lazo, rayos X" },
   { "id": "sh-points-patch", "query": "renderer=@R&scene=sh-points-patch&fog=exp", "advance": 2, "nota": "polvo del parking: PointsMaterial + onBeforeCompile (movimiento por uDustTime)" },
   { "id": "sh-physical", "query": "renderer=@R&scene=sh-physical&fog=exp", "advance": 2, "nota": "MeshPhysicalMaterial: clearcoat, sheen, specularIntensity e ior con luces directas" },
-  { "id": "sh-ibl", "query": "renderer=@R&scene=sh-ibl&fog=exp", "advance": 2, "nota": "scene.environment con PMREMGenerator: reflejos y luz difusa del entorno en Standard y Physical" }
+  { "id": "sh-ibl", "query": "renderer=@R&scene=sh-ibl&fog=exp", "advance": 2, "nota": "scene.environment con PMREMGenerator: reflejos y luz difusa del entorno en Standard y Physical" },
+  { "id": "sh-pool-water", "query": "renderer=@R&scene=sh-pool-water&fog=exp", "advance": 2, "nota": "agua de pool.ts: Reflector (render anidado a HalfFloat) + shader PoolWater" }
 ]
