@@ -75,6 +75,38 @@ impl Grid {
         }
     }
 
+    /// Recorre las celdas que cruza el rayo (origen `o`, dirección `d` en XZ, hasta `tmax`) en orden; `f` visita un colisionador y devuelve el mejor
+    /// impacto hasta ahora (INFINITY si ninguno): se para al salir de una celda con un impacto ya más cerca que su salida.
+    pub fn visit_ray(&self, o: [f32; 2], d: [f32; 2], tmax: f32, mut f: impl FnMut(u32) -> f32) {
+        let (mut cx, mut cz) = (self.coord(o[0]), self.coord(o[1]));
+        let step = |v: f32| if v > 0.0 { 1 } else { -1 };
+        let (sx, sz) = (step(d[0]), step(d[1]));
+        let cell = self.cell;
+        let next = |c: i32, s: i32, o: f32, d: f32| if d == 0.0 { f32::INFINITY } else { (((c + (s > 0) as i32) as f32) * cell - o) / d };
+        let (mut tx, mut tz) = (next(cx, sx, o[0], d[0]), next(cz, sz, o[1], d[1]));
+        let (dx, dz) = (if d[0] == 0.0 { f32::INFINITY } else { cell / d[0].abs() }, if d[1] == 0.0 { f32::INFINITY } else { cell / d[1].abs() });
+        let mut best = f32::INFINITY;
+        loop {
+            let mut n = self.heads.get(&key(cx, cz)).copied().unwrap_or(NIL);
+            while n != NIL {
+                let nd = &self.nodes[n as usize];
+                best = best.min(f(nd.col));
+                n = nd.next;
+            }
+            let t_exit = tx.min(tz);
+            if best <= t_exit || t_exit > tmax {
+                break;
+            }
+            if tx < tz {
+                cx += sx;
+                tx += dx;
+            } else {
+                cz += sz;
+                tz += dz;
+            }
+        }
+    }
+
     pub fn clear(&mut self) {
         self.heads.clear();
         self.nodes.clear();

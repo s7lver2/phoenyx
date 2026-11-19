@@ -104,4 +104,41 @@ fn main() {
         fail(&format!("no aterriza en el nivel bajo del hueco: y = {} suelo = {}", b.pos[1], b.ground));
     }
     println!("ok hueco de dos niveles: y = {:.2}", b.pos[1]);
+
+    // 8. Pokeball: rebota contra una caja (la velocidad normal se invierte con restitucion) y acaba en reposo en el suelo.
+    use phoenyx_collide::{Hit, Projectile};
+    let mut w = World::new(3.0);
+    w.add_floor(0, [-50.0, -50.0], [50.0, 50.0], 0.0);
+    w.add_box(0, [5.0, 0.0, -5.0], [5.5, 3.0, 5.0]);
+    let mut p = [Projectile::new([0.0, 1.0, 0.0], [12.0, 2.0, 0.0], 0.1, 0.6, 0.2)];
+    let mut rebotó = false;
+    for _ in 0..600 {
+        w.step_projectiles(&mut p, 1.0 / 60.0, 20.0);
+        if p[0].vel[0] < -1.0 {
+            rebotó = true;
+        }
+        if p[0].pos[0] > 5.0 {
+            fail("atraviesa la caja");
+        }
+    }
+    if !rebotó || !p[0].resting || (p[0].pos[1] - 0.1).abs() > 0.01 {
+        fail(&format!("pokeball: rebote = {rebotó}, reposo = {}, y = {}", p[0].resting, p[0].pos[1]));
+    }
+    println!("ok proyectil: x = {:.2} y = {:.2}", p[0].pos[0], p[0].pos[1]);
+
+    // 9. Raycast contra caja, cilindro y caja girada.
+    let mut w = World::new(3.0);
+    w.add_box(0, [5.0, 0.0, -1.0], [6.0, 2.0, 1.0]);
+    w.add_cylinder(0, [20.0, 0.0, 0.0], 1.0, 2.0);
+    let mut h = Hit::default();
+    if !w.raycast([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 50.0, &mut h) || (h.t - 5.0).abs() > 1e-3 || h.normal[0] > -0.9 {
+        fail(&format!("raycast caja: t = {}", h.t));
+    }
+    if w.raycast([10.0, 1.0, 0.0], [1.0, 0.0, 0.0], 5.0, &mut h) {
+        fail("raycast: dio mas alla del maximo");
+    }
+    if !w.raycast([10.0, 1.0, 0.0], [1.0, 0.0, 0.0], 50.0, &mut h) || (h.t - 9.0).abs() > 1e-3 {
+        fail(&format!("raycast cilindro: t = {}", h.t));
+    }
+    println!("ok raycast");
 }

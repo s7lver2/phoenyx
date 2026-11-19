@@ -3,12 +3,16 @@
 pub mod character;
 pub mod grid;
 pub mod height;
+pub mod projectile;
+pub mod ray;
 pub mod shapes;
 
 use grid::Grid;
 use height::Floors;
 pub use height::FloorKind;
 pub use character::{Body, GROUNDED, HIT_WALL, STEPPED};
+pub use projectile::Projectile;
+pub use ray::Hit;
 pub use shapes::{Shape, V3};
 
 /// Un bloque de celdas sólidas (1 bit por celda) del laberinto de un nivel.
@@ -125,6 +129,16 @@ impl World {
                 out.push(cols[i].shape);
             }
         });
+        self.append_cells(min, max, out);
+    }
+
+    /// Solo las celdas sólidas de los bloques que tocan la caja (para el raycast).
+    pub fn query_cells_only(&self, min: V3, max: V3, out: &mut Vec<Shape>) {
+        out.clear();
+        self.append_cells(min, max, out);
+    }
+
+    fn append_cells(&self, min: V3, max: V3, out: &mut Vec<Shape>) {
         for c in self.cells.iter().filter(|c| c.alive && c.y0 <= max[1] && c.y1 >= min[1]) {
             let lo = |v: f32, o: f32| ((v - o) / c.cell).floor().max(0.0) as u32;
             let hi = |v: f32, o: f32, n: u32| (((v - o) / c.cell).floor() + 1.0).clamp(0.0, n as f32) as u32;
