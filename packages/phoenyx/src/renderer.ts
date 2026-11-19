@@ -79,6 +79,12 @@ export class WebGLRenderer {
   private depth = 0;
   private hookFrustum = new Frustum();
   private hookMatrix = new Matrix4();
+  /** WebGLRenderer.capabilities: lo que consulta el juego (anisotropia) y lo basico que lee three */
+  capabilities = { isWebGL2: true, maxTextureSize: 8192, maxAnisotropy: 16, precision: 'highp', getMaxAnisotropy: () => 16, getMaxPrecision: () => 'highp' };
+  /** WebGLRenderer.extensions: no hay extensiones de WebGL; solo se anuncia la compilacion en paralelo (la GPU compila al primer dibujo) */
+  extensions = { has: (name: string) => name === 'KHR_parallel_shader_compile', get: (_name: string) => null, init() {} };
+  private loopId = 0;
+  private loopFn: ((time: number, frame?: any) => void) | null = null;
   /** resguardos de la parte de WebGLRenderer que toca el Reflector: sin XR; el estado de GL lo lleva phoenyx-gl */
   xr = { enabled: false };
   state = { buffers: { depth: { setMask(_m: boolean) {} } }, viewport(_v: any) {} };
@@ -96,6 +102,45 @@ export class WebGLRenderer {
     this.ready.catch((e) => console.error('[phoenyx] no se pudo iniciar la GPU:', e));
   }
 
+  /** Tamano del bufer de dibujo en pixeles (como WebGLRenderer.getDrawingBufferSize). */
+  getDrawingBufferSize(target: { set(x: number, y: number): unknown }) {
+    return target.set(this.domElement.width, this.domElement.height);
+  }
+  /**
+   * Sustituto del contexto de WebGL: lo que el juego le pregunta (perdida de contexto, el nombre de la GPU) y nada mas.
+   * `WEBGL_debug_renderer_info` existe y `getParameter(UNMASKED_RENDERER_WEBGL)` devuelve el backend de phoenyx.
+   */
+  getContext() {
+    const self = this;
+    return {
+      LINK_STATUS: 0x8b82,
+      canvas: this.domElement,
+      isContextLost: () => !self.gl || self.gl.is_lost(),
+      getExtension: (name: string) => (name === 'WEBGL_debug_renderer_info' ? { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 } : null),
+      getParameter: (p: number) => (p === 0x9246 ? 'Phoenyx (WebGPU)' : p === 0x9245 ? 'phoenyx' : null),
+      getProgramParameter: () => true,
+      getSupportedExtensions: () => [],
+    };
+  }
+  /** Sube la textura a la GPU ahora (la primera vez que se pinta cuesta un tiron). */
+  initTexture(tex: any) {
+    if (this.gl) this.textures.idOf(tex);
+  }
+  /** WebGLRenderer.setAnimationLoop: un bucle de requestAnimationFrame (sin XR); `null` lo detiene. */
+  setAnimationLoop(cb: ((time: number, frame?: any) => void) | null) {
+    this.loopFn = cb;
+    if (this.loopId) cancelAnimationFrame(this.loopId), (this.loopId = 0);
+    if (!cb) return;
+    const tick = (t: number) => {
+      this.loopId = requestAnimationFrame(tick);
+      this.loopFn?.(t);
+    };
+    this.loopId = requestAnimationFrame(tick);
+  }
+  /** Libera la GPU del todo (el juego lo llama tras dispose()). */
+  forceContextLoss() {
+    this.dispose();
+  }
   setPixelRatio(r: number) {
     this.pixelRatio = r;
     if (this.width) this.setSize(this.width, this.height, false);
@@ -470,6 +515,7 @@ export class WebGLRenderer {
   }
 
   dispose() {
+    this.setAnimationLoop(null);
     this.disposed = true;
     this.gl?.free?.();
     this.gl = null;
