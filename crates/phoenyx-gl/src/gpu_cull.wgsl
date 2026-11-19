@@ -78,7 +78,7 @@ fn cull(@builtin(global_invocation_id) id: vec3<u32>, @builtin(workgroup_id) wg:
     if (outside(r3 + r0, vp, r) || outside(r3 - r0, vp, r) || outside(r3 + r1, vp, r) || outside(r3 - r1, vp, r) || outside(r3 + r2, vp, r) || outside(r3 - r2, vp, r)) {
         return;
     }
-    let dist = max(length(vp), 0.0001);
+    let dist = max(length(vp) - r, 0.0001); // (a la parte mas cercana: una malla grande y cerca no baja a un LOD grueso por su centro)
     // pixeles por unidad a esa distancia: proj[1][1] * alto / 2 / distancia
     let ppu = p[1][1] * prm.height * 0.5 / dist;
     // demasiado pequena para verse
@@ -87,7 +87,7 @@ fn cull(@builtin(global_invocation_id) id: vec3<u32>, @builtin(workgroup_id) wg:
     }
     // el LOD mas grueso cuyo error proyectado cabe en la tolerancia
     var lod = 0u;
-    let n = gr.a.w;
+    let n = max(gr.a.w, 1u);
     for (var l = n - 1u; l > 0u; l = l - 1u) {
         let e = gr.err[l] * sc * ppu;
         if (e <= prm.tau) {
