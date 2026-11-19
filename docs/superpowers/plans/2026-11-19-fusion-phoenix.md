@@ -34,33 +34,30 @@
 - [ ] **Paso 1:** renombrar con `git mv` `crates/lux` → `crates/phoenyx-lux` y `crates/phoenix-bake` → `crates/phoenyx-bake`; actualizar `name` en sus `Cargo.toml` y las dependencias de `crates/phoenix`. Esperado: `cargo check --workspace --target wasm32-unknown-unknown` sin errores (el bake es nativo: `cargo check -p phoenyx-bake`).
 - [ ] **Paso 2:** actualizar `README.md` y `docs/ARQUITECTURA.md` para decir «Phoenyx» como único nombre del motor. Commit.
 
-### Tarea 2: Módulo `gpu_driven` sobre el dispositivo compartido (Fase A)
+### Tarea 2: Culling y LOD en GPU dentro de `phoenyx-gl` (Fase A/B) — REVISADA
 
-**Archivos:** crear `crates/phoenyx-gl/src/gpu_driven/{mod.rs,cull.wgsl,hiz.wgsl,draw.wgsl}`; mover de `crates/phoenix/src/` el culling, `pick`, Hi-Z y el dibujo indirecto; `crates/phoenyx-gl/Cargo.toml` (dependencia `phoenyx-lux`, opcional).
+**Ruling (2026-11-19):** el sombreado de Phoenix (lux) no se copia. De Phoenix solo se reutiliza la idea de culling + elección de LOD en compute; el dibujo lo hace Phoenyx con su fragment shader legacy (mismo aspecto, lightmap incluido). Decisión del dueño: «adapta el sombreado de phoenix para que use también el legacy».
 
-**Interfaces:**
-- Produce: `pub struct GpuDriven` con
-  - `GpuDriven::new(device: &wgpu::Device, hdr: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> GpuDriven`
-  - `set_models(&mut self, device, queue, pkg: &Package)` (paquete bakeado: verts, idx, texturas, `info`, `draws`)
-  - `set_instances(&mut self, queue, first: u32, data: &[f32])` (8 floats por instancia, formato de `docs/ARQUITECTURA.md`)
-  - `encode(&mut self, enc: &mut wgpu::CommandEncoder, view: &ViewParams, color: &wgpu::TextureView, depth: &wgpu::TextureView)` que añade culling + pase de dibujo al encoder de Phoenyx
-  - `resize(&mut self, device, w: u32, h: u32)`
-- Consume: el `Device`/`Queue` de `Gl` (`crates/phoenyx-gl/src/lib.rs`, función `create`).
-
-- [ ] **Paso 1:** extraer de `crates/phoenix/src/lib.rs` (struct `Phoenix`, 1288 líneas) lo que no es cielo/suelo/post-proceso/ventana: buffers de instancias, `chunk_build`/`count`/`scan`/`scatter`, tabla de modelos, args indirectos, Hi-Z, bundle de dibujo. Los shaders WGSL se copian a `gpu_driven/` sin cambios de lógica.
-- [ ] **Paso 2:** el pase de dibujo escribe en el color HDR y profundidad que se le pasan (los de Phoenyx), con `LoadOp::Load`; no crea superficie ni cielo/suelo/post (los de Phoenyx mandan).
-- [ ] **Paso 3:** con la lista de instancias vacía, `encode` no hace nada. Esperado: `cargo build -p phoenyx-gl --release --target wasm32-unknown-unknown` y `wasm-bindgen` sin errores; escenas de fidelidad sin cambios. Commit.
-
-### Tarea 3: Pasarela TypeScript y marca de objetos compatibles (Fase B)
-
-**Archivos:** `packages/phoenyx/src/pack.ts`, `renderer.ts`, nuevo `packages/phoenyx/src/gpuDriven.ts`.
+**Archivos:** crear `crates/phoenyx-gl/src/gpu_cull.rs` y `gpu_cull.wgsl`; modificar `crates/phoenyx-gl/src/lib.rs` (`frame`, creación de dispositivo con `INDIRECT_FIRST_INSTANCE`, bind group 0 con `gpu_vis`) y `shader.wgsl` (`vs`).
 
 **Interfaces:**
-- Produce: `WebGLRenderer.setModelPackage(pkg: ModelPackage | null)`; un `InstancedMesh` con `userData.gpuModel: number` (índice del modelo en el paquete) se dibuja por el camino GPU en vez de por el normal. `renderer.gpuDriven: boolean` (por defecto `true` si hay paquete).
-- Consume: `GpuDriven` de la Tarea 2 vía los enlaces wasm.
+- Dibujo marcado con el bit 8192 de `flags` (palabra 3 de un dibujo de `draws`): `draw_indexed_indirect` con el slot de argumentos en la palabra 10; en `vs`, `k = gpu_vis[draws[di*3+2].y + k]` (palabra 9 = base en `gpu_vis`).
+- `frame(..., gpu_groups: &[f32])`: por grupo 16 floats `[obj, inst_offset, count, lod_count, slot0, vis_base, radius, 0, cx, cy, cz, tau_scale, err0, err1, err2, err3]`; Rust escribe los argumentos indirectos de cada (grupo, LOD) en CPU con `instance_count = 0` y `first_instance = índice_de_dibujo << 16`, y el compute suma con `atomicAdd` y rellena `gpu_vis`.
+- Compute `cull`: una invocación por instancia; frustum (planos de view·proj), tamaño mínimo, LOD = el más grueso cuyo error proyectado (px) ≤ tolerancia.
 
-- [ ] **Paso 1:** en `pack`, los objetos con `userData.gpuModel` definido y matriz con solo rotación en Y/escala uniforme se sacan de la lista normal y se convierten a 8 floats (`[x,y,z,escala,modelo,yaw,hash,0]`); los que no cumplan siguen por el camino normal (Review Focus).
-- [ ] **Paso 2:** `renderer.gpuDriven = false` devuelve el dibujo por el camino normal para todos. Esperado: con el flag apagado, las capturas son idénticas a las de hoy. Commit.
+- [ ] **Paso 1:** pedir `INDIRECT_FIRST_INSTANCE` si el adaptador lo tiene (`gpu_ok`); sin él, `frame` ignora `gpu_groups` y los dibujos marcados salen por el camino normal (Review Focus).
+- [ ] **Paso 2:** `gpu_cull.wgsl` + `gpu_cull.rs` (pipeline, buffers `gpu_args`, `gpu_vis`, `gpu_groups`, dispatch antes del pase principal).
+- [ ] **Paso 3:** `vs` con remapeo y `frame` con `draw_indexed_indirect`; en sombras y en la pasada de normales los grupos GPU salen por el camino normal (LOD 0, todas las instancias).
+- [ ] **Paso 4:** `cargo build --release` + `wasm-bindgen`; escenas de fidelidad sin cambios (sin grupos GPU). Commit.
+
+### Tarea 3: Pasarela TypeScript y marca de objetos (Fase B) — REVISADA
+
+**Archivos:** `packages/phoenyx/src/pack.ts`, `renderer.ts`.
+
+**Interfaces:** Produce `InstancedMesh.userData.gpuLods: { geometry: BufferGeometry; error: number }[]` (el LOD 0 es la geometría del propio mesh, error 0) y `renderer.gpuDriven: boolean` (true por defecto). `pack` emite, por cada LOD, un dibujo con el bit 8192 y rellena `gpu_groups`.
+
+- [ ] **Paso 1:** `pack` emite los dibujos de LOD y el registro del grupo; con `renderer.gpuDriven = false` o con matrices que no sean rotación Y + escala uniforme, el mesh sale por el camino normal.
+- [ ] **Paso 2:** prueba en el harness con una escena sintética de 2 LOD visibles; con el flag apagado, capturas idénticas a las de hoy. Commit.
 
 ### Tarea 4: Bake en el build (Fase B)
 
