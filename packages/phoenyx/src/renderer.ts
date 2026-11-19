@@ -6,6 +6,7 @@ import { Packer } from './pack';
 import { TextureCache } from './textures';
 import { passShaderOf, blendOf } from './passes';
 import { userShaderOf } from './user-shaders/index';
+import { patchOf } from './patches';
 import './user-shaders/prueba';
 import './user-shaders/waterjet';
 import './user-shaders/parking-atmosphere';
@@ -216,6 +217,15 @@ export class WebGLRenderer {
   }
 
   /** Shader de usuario de un ShaderMaterial de la escena: id del WGSL, uniformes del fotograma, clave de texturas y mezcla empaquetada (null si no esta portado). */
+  /** Parche de `onBeforeCompile` de un material estandar: id del gancho y sus uniformes de este fotograma (y sube el lightmap si cambio). */
+  private patchInfo(m: any) {
+    const p = patchOf(m, this);
+    if (!p) return null;
+    p.def.sync?.(p.uniforms, this.gl, this.patchState);
+    return { id: p.def.id, extras: p.def.pack(p.uniforms) };
+  }
+  private patchState = { lmKey: '' };
+
   private userInfo(m: any) {
     const def = userShaderOf(m);
     if (!def) return null;
@@ -370,7 +380,7 @@ export class WebGLRenderer {
     if (!rtOut && this.toneMapping !== NoToneMapping && this.toneMapping !== ACESFilmicToneMapping) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
     this.renderCount++;
     const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, // con scene.background (Color) three limpia siempre, segun autoClearColor/autoClearDepth aunque autoClear sea false
- clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, size: rtOut ? [Math.max(1, Math.floor(this.rt.width)), Math.max(1, Math.floor(this.rt.height))] : [this.domElement.width, this.domElement.height], shadow: this.shadowMap }, (g, slots) => this.geomId(g, slots), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m));
+ clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, size: rtOut ? [Math.max(1, Math.floor(this.rt.width)), Math.max(1, Math.floor(this.rt.height))] : [this.domElement.width, this.domElement.height], shadow: this.shadowMap }, (g, slots) => this.geomId(g, slots), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m), (m) => this.patchInfo(m));
     // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
     if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {
       this.gl.set_ltc(UniformsLib.LTC_FLOAT_1.image.data, UniformsLib.LTC_FLOAT_2.image.data);

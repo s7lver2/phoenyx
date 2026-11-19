@@ -68,6 +68,26 @@ struct Shadow {
 @group(1) @binding(8) var smp_emis: sampler;
 @group(1) @binding(9) var smp_bump: sampler;
 
+/// Parches de `onBeforeCompile` portados (packages/phoenyx/src/patches.ts): 1 tinte de cosmeticos (cos-tint), 2 luz de lightmap.ts,
+/// 3 rugosidad minima del hormigon del parking, 4 baldosa de las Poolrooms (poolTile).
+fn h31(p: vec3<f32>) -> f32 {
+    var q = fract(fma(p, vec3<f32>(0.3183099), vec3<f32>(0.1)));
+    q = q * 17.0;
+    return fract(q.x * q.y * q.z * (q.x + q.y + q.z));
+}
+fn vn(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    var f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(h31(i), h31(i + vec3<f32>(1.0, 0.0, 0.0)), f.x), mix(h31(i + vec3<f32>(0.0, 1.0, 0.0)), h31(i + vec3<f32>(1.0, 1.0, 0.0)), f.x), f.y),
+               mix(mix(h31(i + vec3<f32>(0.0, 0.0, 1.0)), h31(i + vec3<f32>(1.0, 0.0, 1.0)), f.x), mix(h31(i + vec3<f32>(0.0, 1.0, 1.0)), h31(i + vec3<f32>(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+}
+/// smoothstep de GLSL: admite bordes en cualquier orden (en WGSL low >= high es indeterminado).
+fn sstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
 /// uv de un mapa: matriz de uv de la textura (texture.matrix) aplicada a las uv interpoladas.
 fn uvT(m: Mat, k: u32, uv: vec2<f32>) -> vec2<f32> {
     let a = m.uv[k * 2u];
@@ -86,6 +106,8 @@ struct VOut {
     @location(6) sc1: vec4<f32>,
     @location(7) sc2: vec4<f32>,
     @location(8) sc3: vec4<f32>,
+    @location(9) wpos: vec3<f32>,   // posicion y normal de mundo (los parches de material las leen como vWp / vLmP y vUp / vLmN)
+    @location(10) wnrm: vec3<f32>,
 };
 
 // skinbase_vertex / skinning_vertex / skinnormal_vertex de three: el tramo de huesos vive en la reserva de matrices (inst_mats):
@@ -151,6 +173,8 @@ fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @locatio
     var out: VOut;
     out.pos = clip;
     out.vpos = vp.xyz;
+    out.wpos = (o.model * p).xyz;
+    out.wnrm = normalize(mat3x3<f32>(o.model[0].xyz, o.model[1].xyz, o.model[2].xyz) * nrm);
     // FLIP_SIDED (material BackSide): three invierte la normal en el vertex shader
     let flip = select(1.0, -1.0, (d.w & 32u) != 0u);
     out.vnormal = normalize(mat3x3<f32>(o.n0.xyz, o.n1.xyz, o.n2.xyz) * nrm) * flip;   // beginnormal/defaultnormal: three normaliza por vertice
@@ -284,6 +308,10 @@ struct PhysMat {
 };
 
 // ---- RectAreaLight: tablas LTC (lights_physical_pars_fragment), muestreadas con bilinear a mano (Rgba32Float no filtrable) ----
+// el lightmap del parche de luz de lightmap.ts (se sube con set_lightmap): textura de luz (rgb, a = oclusion) y de tubos que parpadean
+@group(0) @binding(11) var lm0: texture_2d<f32>;
+@group(0) @binding(12) var lm1: texture_2d<f32>;
+@group(0) @binding(13) var lm_smp: sampler;
 @group(0) @binding(7) var ltc_1: texture_2d<f32>;
 @group(0) @binding(8) var ltc_2: texture_2d<f32>;
 @group(0) @binding(9) var<storage, read> shadows: array<Shadow>;
@@ -471,6 +499,16 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
     let Hll = bumpScale * textureSample(tex_bump, smp_bump, uvB).x;
     let dBx = bumpScale * textureSample(tex_bump, smp_bump, uvB + dSTdx).x - Hll;
     let dBy = bumpScale * textureSample(tex_bump, smp_bump, uvB + dSTdy).x - Hll;
+    // parche de material (0 = ninguno): sus uniformes (hasta dos vec4) viven en la plaza `m.pad.y` de `materials`
+    let pid = u32(m.pad.x);
+    var pe0 = vec4<f32>(0.0);
+    var pe1 = vec4<f32>(0.0);
+    if (pid != 0u) {
+        let ex = materials[u32(m.pad.y)];
+        pe0 = ex.color;
+        pe1 = ex.emissive;
+    }
+    let wp = in.wpos;
     // map_fragment: diffuseColor *= sampledDiffuseColor; color_fragment: diffuseColor.rgb *= vColor
     var diffuse = m.color.rgb;
     var diffuseA = m.color.a;
@@ -478,7 +516,20 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         diffuse = diffuse * sMap.rgb;
         diffuseA = diffuseA * sMap.a;
     }
+    // cos-tint (tras map_fragment): la luminosidad de la textura pintada con el color elegido
+    if (pid == 1u) {
+        let l = dot(diffuse, vec3<f32>(0.299, 0.587, 0.114));
+        diffuse = mix(diffuse, pe0.rgb * l * 1.3, pe0.w);
+    }
     diffuse = diffuse * in.color;
+    // poolTile (tras color_fragment): cada baldosa un poco distinta, manchas anchas y suciedad pegada al suelo
+    if (pid == 4u) {
+        let t = h31(floor(wp / 0.12 + 0.01));
+        let b = vn(wp * 0.35);
+        let s = vn(wp * 1.7 + 9.0);
+        diffuse = diffuse * ((0.93 + 0.1 * t) * (0.86 + 0.28 * b)) * vec3<f32>(1.0 + 0.05 * (b - 0.5), 1.0, 1.0 - 0.06 * (b - 0.5));
+        diffuse = diffuse * (1.0 - 0.28 * sstep(0.55, 0.9, s) * (0.4 + 0.6 * sstep(1.2, -0.2, wp.y)));
+    }
     // alphatest_fragment
     if (m.tp.x > 0.0 && diffuseA < m.tp.x) {
         discard;
@@ -532,7 +583,10 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
             normal = normalize(abs(fDet) * vN - vGrad);
         }
         let metalnessFactor = m.misc.x * select(1.0, sRough.b, (maps & 32u) != 0u);   // metalnessMap comparte textura con roughnessMap (glTF)
-        let roughnessFactor = m.emissive.a * select(1.0, sRough.g, (maps & 4u) != 0u);
+        var roughnessFactor = m.emissive.a * select(1.0, sRough.g, (maps & 4u) != 0u);
+        if (pid == 3u) {
+            roughnessFactor = max(roughnessFactor, 0.85);   // parking: el hormigon nunca brilla
+        }
         var material: PhysMat;
         material.diffuseColor = diffuse * (1.0 - metalnessFactor);
         let dxy = max(abs(ddx), abs(ddy));
@@ -540,6 +594,11 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         material.roughness = max(roughnessFactor, 0.0525);
         material.roughness += geometryRoughness;
         material.roughness = min(material.roughness, 1.0);
+        if (pid == 4u) {
+            // poolTile: solo los suelos (cara hacia arriba) conservan su brillo; el resto, rugosidad >= 0.6
+            let fl = sstep(0.6, 0.9, in.wnrm.y);
+            material.roughness = mix(max(material.roughness, 0.6), material.roughness, fl);
+        }
         material.specularColor = mix(vec3<f32>(0.04), diffuse, metalnessFactor);
         material.specularF90 = 1.0;
 
@@ -591,6 +650,9 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
             } else {
                 // getDirectionalLightInfo
                 dirL = l.c.yzw;
+                if (pid == 4u) {
+                    col = col * sstep(0.5, 0.8, in.wnrm.y);   // poolTile: el sol solo calienta lo que mira hacia arriba
+                }
             }
             // lights_fragment_begin: directLight.color *= receiveShadow ? getShadow(...) : 1.0 (d.z = capa de sombra + 1)
             let sl = i32(l.d.z) - 1;
@@ -613,6 +675,18 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         rgb = totalDiffuse + directSpecular + emissive;
     }
 
+    // lightmap.ts (antes de opaque_fragment): la luz horneada del mapa. pe0 = uFlick; pe1 = (uLmSize.xy, uLmGain, _)
+    if (pid == 2u) {
+        let n = normalize(in.wnrm);
+        let lmUv = (wp.xz + n.xz * 0.45) / pe1.xy;
+        let lmA = textureSampleLevel(lm0, lm_smp, lmUv, 0.0);
+        let lmB = textureSampleLevel(lm1, lm_smp, lmUv, 0.0);
+        let lmRgb = lmA.rgb + vec3<f32>(1.0, 0.93, 0.74) * dot(lmB, pe0);
+        let side = 1.0 - abs(n.y);
+        let grad = mix(1.0, 0.5 + 0.5 * sstep(-0.1, 0.8, wp.y), side) * mix(1.0, 0.82, side * sstep(2.1, 2.7, wp.y));
+        let up = select(1.0, 0.42, n.y < -0.5);
+        rgb = rgb * lmA.a * grad + diffuse * lmRgb * 1.5 * lmA.a * grad * up * pe1.z;
+    }
     // tonemapping_fragment
     if (g.p0.x > 0.5) {
         rgb = ACESFilmicToneMapping(rgb);

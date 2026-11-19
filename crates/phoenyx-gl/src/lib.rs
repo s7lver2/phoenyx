@@ -19,6 +19,26 @@ fn entry(b: u32, buf: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 
 
 /// Textura Rgba32Float cuadrada (tablas LTC de RectAreaLight); se lee con textureLoad.
+/// Textura RGBA8 (sin sRGB) de `w` x `h` para un lightmap.
+fn rgba8_view(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, data: &[u8]) -> wgpu::TextureView {
+    let t = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        data,
+    );
+    t.create_view(&Default::default())
+}
+
 fn ltc_view(device: &wgpu::Device, queue: &wgpu::Queue, n: u32, data: &[f32]) -> wgpu::TextureView {
     let t = device.create_texture_with_data(
         queue,
@@ -240,6 +260,9 @@ pub struct Gl {
     white: wgpu::TextureView,
     ltc1: wgpu::TextureView,
     ltc2: wgpu::TextureView,
+    lm0: wgpu::TextureView,
+    lm1: wgpu::TextureView,
+    lm_smp: wgpu::Sampler,
     shadows: Growable,
     shadow_all: wgpu::TextureView,
     shadow_layers: Vec<wgpu::TextureView>,
@@ -368,6 +391,24 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
                 ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             },
             st(9, ro, both),
+            wgpu::BindGroupLayoutEntry {
+                binding: 11,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                count: None,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 12,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                count: None,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 13,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                count: None,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            },
             wgpu::BindGroupLayoutEntry {
                 binding: 10,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -512,6 +553,15 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement) -> Result<Gl, JsValue> {
         white,
         ltc1: ltc_view(&device, &queue, 1, &[0.0; 4]),
         ltc2: ltc_view(&device, &queue, 1, &[0.0; 4]),
+        lm0: rgba8_view(&device, &queue, 1, 1, &[0; 4]),
+        lm1: rgba8_view(&device, &queue, 1, 1, &[0; 4]),
+        lm_smp: device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        }),
         shadows: Growable::new(&device, 1024),
         shadow_all: shadow_views(&device, 1, 1).0,
         shadow_layers: Vec::new(),
@@ -746,6 +796,17 @@ impl Gl {
         }
         self.ltc1 = ltc_view(&self.device, &self.queue, 64, &ltc1[..64 * 64 * 4]);
         self.ltc2 = ltc_view(&self.device, &self.queue, 64, &ltc2[..64 * 64 * 4]);
+        self.bg = None;
+    }
+
+    /// Lightmap del juego (parche de lightmap.ts): dos texturas RGBA8 de `w` x `h` (luz + oclusion, y tubos que parpadean).
+    pub fn set_lightmap(&mut self, w: u32, h: u32, d0: &[u8], d1: &[u8]) {
+        let n = (w * h * 4) as usize;
+        if w == 0 || h == 0 || d0.len() < n || d1.len() < n {
+            return;
+        }
+        self.lm0 = rgba8_view(&self.device, &self.queue, w, h, &d0[..n]);
+        self.lm1 = rgba8_view(&self.device, &self.queue, w, h, &d1[..n]);
         self.bg = None;
     }
 
@@ -1266,6 +1327,9 @@ impl Gl {
                     entry(6, &self.inst_cols.buf),
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&self.ltc1) },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.ltc2) },
+                    wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(&self.lm0) },
+                    wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(&self.lm1) },
+                    wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(&self.lm_smp) },
                     entry(9, &self.shadows.buf),
                     wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&self.shadow_all) },
                 ],
@@ -1284,6 +1348,9 @@ impl Gl {
                     entry(6, &self.inst_cols.buf),
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&self.ltc1) },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.ltc2) },
+                    wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(&self.lm0) },
+                    wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(&self.lm1) },
+                    wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(&self.lm_smp) },
                     entry(9, &self.shadows.buf),
                     wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&self.shadow_dummy) },
                 ],

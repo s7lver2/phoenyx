@@ -16,6 +16,8 @@ for (const dir of ['lights']) for (const f of fs.readdirSync(path.join(src, dir)
 for (const dir of ['geometries', 'textures', 'extras/curves']) for (const f of fs.readdirSync(path.join(src, dir))) if (f.endsWith('.js') && f !== 'Geometries.js' && f !== 'Curves.js') entries.push(`${dir}/${f}`);
 for (const f of ['extras/core/Shape.js', 'extras/core/Path.js', 'extras/core/CurvePath.js', 'extras/core/Curve.js', 'extras/ShapeUtils.js', 'extras/DataUtils.js', 'loaders/TextureLoader.js', 'loaders/ImageLoader.js', 'loaders/FileLoader.js', 'loaders/ImageBitmapLoader.js', 'loaders/LoadingManager.js', 'loaders/Cache.js', 'loaders/Loader.js', 'loaders/LoaderUtils.js', 'loaders/MaterialLoader.js', 'core/InterleavedBuffer.js', 'core/InterleavedBufferAttribute.js']) entries.push(f);
 entries.push('constants.js', 'utils.js', 'renderers/shaders/UniformsLib.js');
+// el chunk que el parche poolTile del juego reutiliza (THREE.ShaderChunk.lights_fragment_begin); el registro completo de chunks no se copia
+entries.push('renderers/shaders/ShaderChunk/lights_fragment_begin.glsl.js');
 
 const seen = new Set();
 const visit = (rel) => {

@@ -103,7 +103,7 @@ export class Packer {
   forceShadows = false;
   private sSize = 0;
 
-  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any, slots?: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; points: boolean; attributes: any; values: number[]; texKey: number; b0: number; b1: number } | null): Packed {
+  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any, slots?: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; points: boolean; attributes: any; values: number[]; texKey: number; b0: number; b1: number } | null, patchInfo: (material: any) => { id: number; extras: number[] } | null = () => null): Packed {
     if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
     if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
     this.projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -142,6 +142,8 @@ export class Packer {
         // metalnessMap solo se admite si es la misma textura que roughnessMap (asi las emite GLTFLoader)
         if (std && m.metalnessMap && m.metalnessMap === m.roughnessMap && m.roughnessMap.image) mask |= 32;
         const ns = m.normalScale;
+        // parche de material (onBeforeCompile portado): su id y la plaza con sus uniformes, la siguiente a la del material
+        const pa = std ? patchInfo(m) : null;
         matData.push(
           c.r, c.g, c.b, m.opacity,
           e && std ? e.r * k : 0, e && std ? e.g * k : 0, e && std ? e.b * k : 0, std ? m.roughness : 1,
@@ -149,8 +151,13 @@ export class Packer {
           m.alphaTest > 0 ? m.alphaTest : 0, ns ? ns.x : 1, ns ? ns.y : 1, m.bumpScale ?? 1,
           mask, 0, 0, 0,
           ...uv,
-          0, 0, 0, 0,
+          pa ? pa.id : 0, pa ? nslot : 0, 0, 0,
         );
+        if (pa) {
+          nslot++;
+          matData.push(...pa.extras);
+          while (matData.length < nslot * MATERIAL_F) matData.push(0);
+        }
       }
       return i;
     };

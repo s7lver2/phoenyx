@@ -18,6 +18,7 @@ import { makeVentGas } from './games/vents.js';
 import { makeCamDust, makeWorldDust } from './games/dust.js';
 import { makeWorldShafts, makeWorldSky } from './games/worldSky.js';
 import { makeParkingAtmosphere } from './games/parkingAtmosphere.js';
+import { LM, lightmapped, makeLightmap, cosTint, poolTile, concrete } from './games/patches.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -624,6 +625,58 @@ if (sceneId === 'sh-dust-world') scene.add(makeWorldDust(THREE, { t: 13.9 }));
 // ---- escenas 'sh-world-shaft' (haces de los paneles: malla instanciada aditiva de doble cara) y 'sh-world-sky' (cupula con nubes y posterizado) ----
 if (sceneId === 'sh-world-shaft') scene.add(makeWorldShafts(THREE));
 if (sceneId === 'sh-world-sky') scene.add(makeWorldSky(THREE, { t: 9 }));
+
+// ---- escenas de parches de material (`onBeforeCompile`): cada una con el cuerpo del parche del juego ----
+if (sceneId === 'sh-cosmetics') {
+  // el traje (textura amarilla con detalles oscuros) con el tinte del juego: luminosidad de la textura pintada de azul, mezcla parcial
+  const t = canvasTex((g, n) => {
+    g.fillStyle = '#d8b020'; g.fillRect(0, 0, n, n);
+    g.fillStyle = '#403018'; for (let i = 0; i < 6; i++) g.fillRect(i * 44 + 6, 20, 14, 216);
+    g.fillStyle = '#f0e090'; g.fillRect(0, 120, n, 30);
+  });
+  [[-2.2, 0], [0, 0.6], [2.2, 0]].forEach(([x, mix], i) => {
+    const m = new THREE.MeshStandardMaterial({ map: t, roughness: 0.7, metalness: 0 });
+    cosTint(THREE, m, { value: new THREE.Color(i === 2 ? 0xe070a0 : 0x3070e0) }, { value: i === 0 ? 0 : 0.85 });
+    box(0.9, 1.6, 0.5, m, x, 0.8, 1.5);
+  });
+}
+if (sceneId === 'sh-lightmap') {
+  // la luz horneada sobre un suelo, una pared y una fila de cajas instanciadas (cada una con su normal): el techo recibe poco
+  makeLightmap(THREE, 48, 48, 24);
+  const mk = (c) => { const m = new THREE.MeshStandardMaterial({ color: c, roughness: 0.8, metalness: 0 }); lightmapped(m); return m; };
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(14, 14).rotateX(-Math.PI / 2), mk(0xb9a85a)); fl.position.set(4, 0.01, 4); scene.add(fl);
+  const wl = new THREE.Mesh(new THREE.BoxGeometry(14, 3, 0.2), mk(0xc9b86c)); wl.position.set(4, 1.5, -2); scene.add(wl);
+  const cl = new THREE.Mesh(new THREE.PlaneGeometry(14, 14).rotateX(Math.PI / 2), mk(0xcfc8a0)); cl.position.set(4, 2.9, 4); scene.add(cl);
+  const im = new THREE.InstancedMesh(new THREE.BoxGeometry(0.8, 1.4, 0.8), mk(0xd0c090), 5);
+  const mm = new THREE.Matrix4();
+  for (let i = 0; i < 5; i++) im.setMatrixAt(i, mm.makeTranslation(-1 + i * 1.6, 0.7, 2 - (i % 2) * 2.2));
+  scene.add(im);
+}
+if (sceneId === 'sh-concrete') {
+  // hormigon del parking: rugosidad 0.2 en el material, el parche la sube a 0.85 (el brillo del foco se apaga)
+  const m = concrete(new THREE.MeshStandardMaterial({ color: 0x9a9a92, roughness: 0.2, metalness: 0 }));
+  const m2 = new THREE.MeshStandardMaterial({ color: 0x9a9a92, roughness: 0.2, metalness: 0 });
+  box(1.6, 1.6, 1.6, m, -1.4, 0.8, 1.5);
+  box(1.6, 1.6, 1.6, m2, 1.4, 0.8, 1.5);
+}
+if (sceneId === 'sh-pooltile') {
+  // baldosa de las Poolrooms: suelo y pared con color de vertice (blanco), un sol y la variacion por mundo del parche
+  const t = canvasTex((g, n) => {
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { g.fillStyle = (x + y) % 2 ? '#9fc8c8' : '#bfe0dc'; g.fillRect((x * n) / 8, (y * n) / 8, n / 8, n / 8); }
+  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(4, 4);
+  const m = new THREE.MeshPhysicalMaterial({ map: t, roughness: 0.5, metalness: 0, vertexColors: true, clearcoat: 0.0001 });
+  if (q.get('np') !== '1') poolTile(THREE, m);
+  const white = (g) => g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 3).fill(1), 3));
+  const gf = new THREE.PlaneGeometry(10, 10).rotateX(-Math.PI / 2); white(gf);
+  const gw = new THREE.PlaneGeometry(10, 3); white(gw);
+  const f = new THREE.Mesh(gf, m); f.position.set(0, 0.02, 0); scene.add(f);
+  const w = new THREE.Mesh(gw, m); w.position.set(0, 1.5, -3); scene.add(w);
+  const bx = new THREE.BoxGeometry(1.2, 1.2, 1.2); white(bx);
+  const b = new THREE.Mesh(bx, m); b.position.set(1.5, 0.6, 1); b.rotation.y = 0.5; scene.add(b);
+  const sun = new THREE.DirectionalLight(0xfff0d0, 2.2); sun.position.set(3, 6, 4); scene.add(sun);
+}
 
 // ---- escena 'sh-vhs': RenderPass -> OutputPass -> FilmShader -> VhsShader del juego, con el tiempo fijo ----
 if (sceneId === 'sh-vhs') {
