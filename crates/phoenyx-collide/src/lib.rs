@@ -2,9 +2,12 @@
 // Sin asignaciones en el camino caliente: los buffers de trabajo viven en `World` y se reutilizan.
 pub mod character;
 pub mod grid;
+pub mod height;
 pub mod shapes;
 
 use grid::Grid;
+use height::Floors;
+pub use height::FloorKind;
 pub use character::{Body, GROUNDED, HIT_WALL, STEPPED};
 pub use shapes::{Shape, V3};
 
@@ -35,13 +38,14 @@ pub struct World {
     epoch: u32,
     dead: usize,
     scratch: Vec<Shape>,
+    pub(crate) floors: Floors,
 }
 
 pub type ColId = u32;
 
 impl World {
     pub fn new(cell: f32) -> World {
-        World { grid: Grid::new(cell), cols: Vec::new(), cells: Vec::new(), stamp: Vec::new(), epoch: 0, dead: 0, scratch: Vec::new() }
+        World { grid: Grid::new(cell), cols: Vec::new(), cells: Vec::new(), stamp: Vec::new(), epoch: 0, dead: 0, scratch: Vec::new(), floors: Floors::new(cell) }
     }
 
     fn add(&mut self, chunk: u32, shape: Shape) -> ColId {
@@ -71,6 +75,7 @@ impl World {
 
     /// Quita todo lo de un trozo. La rejilla se reconstruye cuando lo muerto pasa de la mitad.
     pub fn remove_chunk(&mut self, chunk: u32) {
+        self.remove_floors(chunk);
         for c in &mut self.cols {
             if c.alive && c.chunk == chunk {
                 c.alive = false;

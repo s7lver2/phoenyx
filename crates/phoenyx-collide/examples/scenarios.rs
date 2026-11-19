@@ -68,4 +68,40 @@ fn main() {
         fail(&format!("salida de penetracion rara: z = {}", b.pos[2]));
     }
     println!("ok spawn en muro: z = {:.2}", b.pos[2]);
+
+    // 6. Escalera de 9 peldaños (alzada 0,17, huella 0,3) subiendo y bajando a 3x de velocidad: sube entera y vuelve.
+    let mut w = World::new(3.0);
+    w.add_floor(0, [-5.0, -5.0], [20.0, 5.0], 0.0);
+    w.add_steps(0, [2.0, -1.0], [4.7, 1.0], 0.0, 0.17, 0.3, 9, 0, false);
+    w.add_floor(0, [4.7, -1.0], [9.0, 1.0], 1.53);
+    let mut b = Body::new([0.0, 0.0, 0.0], 0.3, 1.8);
+    (b.step_max, b.ground) = (0.35, true);
+    for _ in 0..80 {
+        w.move_capsule(&mut b, [0.09, 0.0], 1.0 / 60.0, 20.0);
+    }
+    if (b.pos[1] - 1.53).abs() > 0.01 || !b.ground {
+        fail(&format!("no sube la escalera: y = {} suelo = {}", b.pos[1], b.ground));
+    }
+    for _ in 0..80 {
+        w.move_capsule(&mut b, [-0.09, 0.0], 1.0 / 60.0, 20.0);
+    }
+    if b.pos[1].abs() > 0.01 || !b.ground {
+        fail(&format!("no baja la escalera pegado al suelo: y = {} suelo = {}", b.pos[1], b.ground));
+    }
+    println!("ok escalera: y = {:.2}", b.pos[1]);
+
+    // 7. Hueco con dos niveles apilados: se cae desde el nivel alto por el hueco y aterriza en el bajo; y subiendo no se cuela al alto.
+    let mut w = World::new(3.0);
+    w.add_floor(0, [-5.0, -5.0], [20.0, 5.0], 0.0); // nivel bajo
+    w.add_floor(0, [-5.0, -5.0], [2.0, 5.0], 3.0); // nivel alto con un hueco desde x = 2
+    w.add_floor(0, [4.0, -5.0], [20.0, 5.0], 3.0);
+    let mut b = Body::new([1.0, 3.0, 0.0], 0.3, 1.8);
+    (b.step_max, b.ground) = (0.35, true);
+    for _ in 0..120 {
+        w.move_capsule(&mut b, [0.03, 0.0], 1.0 / 60.0, 20.0);
+    }
+    if b.pos[1].abs() > 0.01 || !b.ground {
+        fail(&format!("no aterriza en el nivel bajo del hueco: y = {} suelo = {}", b.pos[1], b.ground));
+    }
+    println!("ok hueco de dos niveles: y = {:.2}", b.pos[1]);
 }
