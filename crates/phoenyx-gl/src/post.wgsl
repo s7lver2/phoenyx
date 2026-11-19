@@ -661,7 +661,7 @@ fn fs_film(in: VOut) -> @location(0) vec4<f32> {
     let l = dot(col, vec3<f32>(0.3, 0.59, 0.11));
     col = mix(col, vec3<f32>(l), mad * 0.6);
     let g = hash2(floor(vUv * uRes) + floor(uTime * 24.0) * uMove * 13.7) - 0.5;
-    col += g * (0.07 + 0.08 * mad + 0.05 * uVhs) * (1.0 - 0.5 * l);
+    col += g * (0.035 + 0.08 * mad + 0.085 * uVhs) * (1.0 - 0.5 * l); // (grano a la mitad que en el juego original, salvo en la cinta de las Poolrooms que queda igual)
     col *= 1.0 - r * (1.15 + 1.6 * mad + 0.6 * uWarm);
     let lw = dot(col, vec3<f32>(0.3, 0.59, 0.11));
     col = mix(col, col * vec3<f32>(1.07, 0.97, 0.83), uWarm);

@@ -260,6 +260,7 @@ export class Packer {
       // como renderBufferDirect: sin posicion no se dibuja; materiales sin color (Shader, Depth...) aun no se soportan
       const gp = it.geometry.attributes.position;
       if (!gp || gp.count === 0) continue;
+      if (!ov && m.colorWrite === false && m.depthWrite === false) continue; // material invisible (solo tapa luz en las sombras, como la caja del armario): no se pinta
       // ShaderMaterial del juego: dibujo de usuario (WGSL portado, ver user-shaders/); sin version portada se avisa y se omite
       if (ov && (o.isPoints || o.isLine || o.isSprite)) continue; // los puntos, lineas y sprites no entran en la pasada de normales
       const user = (m.isShaderMaterial || m.isPointsMaterial || m.isSpriteMaterial || m.isLineBasicMaterial) && !ov ? userInfo(m) : null;
