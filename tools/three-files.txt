@@ -78,3 +78,4 @@ core/RenderTarget.js
 renderers/shaders/UniformsUtils.js
 materials/RawShaderMaterial.js
 extras/PMREMGenerator.js
+helpers/GridHelper.js

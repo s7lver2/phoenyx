@@ -22,3 +22,4 @@ shaders/LuminosityHighPassShader.js
 shaders/SMAAShader.js
 shaders/OutputShader.js
 objects/Reflector.js
+controls/OrbitControls.js
