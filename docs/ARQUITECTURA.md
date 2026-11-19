@@ -7,8 +7,8 @@ Phoenix es un renderer GPU-driven en Rust + WebGPU (`wgpu`), compilado a WASM. L
 | Crate | Qué es |
 |---|---|
 | `crates/phoenix` | El motor (cdylib WASM). Culling, draws indirectos, cielo/suelo, post-proceso, Hi-Z. |
-| `crates/lux` | Iluminación independiente: WGSL, recursos de GPU y cálculo de cascadas/focos. Ver [LUX.md](LUX.md). |
-| `crates/phoenix-bake` | Herramienta nativa (CLI) que convierte GLB/procedurales en un paquete de modelos con LOD y texturas. Ver [ASSETS.md](ASSETS.md). |
+| `crates/phoenyx-lux` | Iluminación independiente: WGSL, recursos de GPU y cálculo de cascadas/focos. Ver [LUX.md](LUX.md). |
+| `crates/phoenyx-bake` | Herramienta nativa (CLI) que convierte GLB/procedurales en un paquete de modelos con LOD y texturas. Ver [ASSETS.md](ASSETS.md). |
 | `web/phoenix.js` | Envoltorio JS: soporte, carga de paquetes, creación del motor, ayudantes de luces, vigilancia de errores. |
 
 El anfitrión (la página o el juego) decide la escena: genera las instancias y las pasa al motor.

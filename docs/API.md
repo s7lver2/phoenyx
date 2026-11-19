@@ -6,7 +6,7 @@
 import { supported, loadPackage, createEngine, light, watch } from "./phoenix.js";
 
 if (!(await supported())) { /* sin WebGPU con indirect-first-instance */ }
-const pkg = await loadPackage("assets-ms");                  // paquete de phoenix-bake
+const pkg = await loadPackage("assets-ms");                  // paquete de phoenyx-bake
 const p = await createEngine(canvas, pkg, {
   capacity: 200000,                                           // máximo de instancias
   instances: new Float32Array(/* 8 floats por instancia */),

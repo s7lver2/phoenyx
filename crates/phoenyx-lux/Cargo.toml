@@ -1,8 +1,11 @@
 [package]
-name = "lux"
+name = "phoenyx-lux"
 version = "0.0.1"
 edition = "2024"
 description = "Lux: iluminacion en GPU (PBR, sombras en cascadas, luces con clustering) para wgpu/WebGPU"
+
+[lib]
+name = "lux" # (el nombre de la libreria se conserva: el codigo hace `use lux::...`)
 
 [dependencies]
 wgpu = { version = "30.0.2", default-features = false, features = ["wgsl"] }

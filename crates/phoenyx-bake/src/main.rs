@@ -1,7 +1,7 @@
-//! phoenix-bake: genera modelos procedurales de muy alta resolucion y su cadena de LOD.
+//! phoenyx-bake: genera modelos procedurales de muy alta resolucion y su cadena de LOD.
 //! Salida en web/assets: verts.bin (12 B/vertice: pos snorm16x4 + normal octaedrica snorm16x2),
 //! idx.bin (u32 locales a cada bloque) y meta.json.
-//! Uso: phoenix-bake [--sub 7] [--models 8] [--out web/assets]
+//! Uso: phoenyx-bake [--sub 7] [--models 8] [--out web/assets]
 use meshopt::{SimplifyOptions, VertexDataAdapter, optimize_vertex_cache, simplify, simplify_scale, simplify_sloppy};
 use std::{collections::HashMap, fs, io::Write};
 

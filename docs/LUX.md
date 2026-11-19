@@ -1,6 +1,6 @@
 # Lux
 
-Librería de iluminación en GPU (`crates/lux`). No dibuja la escena: aporta el WGSL, los recursos y el cálculo de las vistas de sombra. Se puede usar con otro motor wgpu.
+Librería de iluminación en GPU (`crates/phoenyx-lux`). No dibuja la escena: aporta el WGSL, los recursos y el cálculo de las vistas de sombra. Se puede usar con otro motor wgpu.
 
 ## Qué incluye
 

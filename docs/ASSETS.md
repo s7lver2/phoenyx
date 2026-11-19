@@ -1,10 +1,10 @@
-# Assets: `phoenix-bake`
+# Assets: `phoenyx-bake`
 
-CLI nativa (`crates/phoenix-bake`) que genera un paquete de modelos para el motor.
+CLI nativa (`crates/phoenyx-bake`) que genera un paquete de modelos para el motor.
 
 ```
-cargo build --release -p phoenix-bake
-./target/release/phoenix-bake --kind glb --glb a.glb,b.glb --tex 2048 --ground <dir-superficie> --out web/assets-x
+cargo build --release -p phoenyx-bake
+./target/release/phoenyx-bake --kind glb --glb a.glb,b.glb --tex 2048 --ground <dir-superficie> --out web/assets-x
 ```
 
 | Opción | Significado |
@@ -35,14 +35,14 @@ Se carga con `loadPackage(dir)` de `web/phoenix.js`.
 
 ```
 python tools/make_suites_glb.py assets-src/suites <ruta>/wallpaper_red.jpg
-./target/release/phoenix-bake --kind glb --glb assets-src/suites/wall.glb,assets-src/suites/floor.glb,assets-src/suites/ceiling.glb,assets-src/suites/door.glb,assets-src/suites/lamp.glb --tex 1024 --out web/assets-suites
+./target/release/phoenyx-bake --kind glb --glb assets-src/suites/wall.glb,assets-src/suites/floor.glb,assets-src/suites/ceiling.glb,assets-src/suites/door.glb,assets-src/suites/lamp.glb --tex 1024 --out web/assets-suites
 ```
 
 ## Personajes con huesos
 
 ```
 node tools/unpack_glb.mjs personaje.glb assets-src/skin/personaje.glb   # solo si el GLB usa meshopt/webp/cuantizacion (los del juego)
-./target/release/phoenix-bake --kind skin --glb assets-src/skin/personaje.glb --tex 1024 --fps 30 --out web/assets-personaje
+./target/release/phoenyx-bake --kind skin --glb assets-src/skin/personaje.glb --tex 1024 --fps 30 --out web/assets-personaje
 ```
 
 Genera `skin.json` (clips, huesos, radio, altura), `skin_verts.bin` (40 B por vértice: posición, normal, UV, 4 huesos, 4 pesos), `skin_idx.bin`, `skin_mats.bin` (matrices por hueso y fotograma, ~3 MB para 65 huesos y 1.100 fotogramas) y `skin_tex.bin`. En JS: `loadSkin(dir)` y `addSkin(engine, skin)`; instancias con `engine.set_skin_instances(id, Float32Array)` (8 floats `[x, y, z, escala, yaw, clip, tiempo en s, 0]`). La GPU mezcla dos fotogramas y 4 huesos; la CPU solo sube la lista de instancias.
