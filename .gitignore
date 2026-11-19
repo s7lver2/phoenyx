@@ -1,5 +1,5 @@
 target/
-pkg/
+/pkg/
 web/assets/
 web/assets-*/
 assets-src/
@@ -9,6 +9,6 @@ tools/fidelity/node_modules/
 fidelity/out/
 fidelity/baseline/*/*.png
 fidelity/baseline/*/*-diff.png
-packages/phoenyx/pkg/
+!packages/phoenyx/pkg/
 web/fidelity/dist/
 web/models
