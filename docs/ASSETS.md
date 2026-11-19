@@ -1,4 +1,10 @@
-# Assets: `phoenyx-bake`
+# Assets
+
+## LOD de los modelos del juego (`tools/bake_lods.mjs`, en Backrooms)
+
+Al compilar el juego (`vite build`, plugin `bakeLods`) y al arrancar el servidor de desarrollo se ejecuta `tools/bake_lods.mjs`: lee los GLB de `client/public/models` (con meshopt, via gltf-transform), funde las mallas por material igual que `instanced()` de `world.ts`, y simplifica hasta 3 LOD (1/4, 1/16, 1/64 de triángulos, solo si hay 600+ triángulos). Cada LOD es un índice sobre los vértices sin indexar de la malla fundida; sale en `client/public/models/lods/**.json/.bin` (ignorado por git, incremental). El juego (`lods.ts`) los carga y los asigna por nombre de material y número de vértices. Un fallo del bake falla el build.
+
+## `phoenyx-bake` (paquetes propios con 10 LOD)
 
 CLI nativa (`crates/phoenyx-bake`) que genera un paquete de modelos para el motor.
 
@@ -27,7 +33,7 @@ cargo build --release -p phoenyx-bake
 
 `meta.json` (modelos, LOD, `draws` = `[index_count, first_index, base_vertex]` por (modelo, LOD), `info` = 16 floats por modelo, tamaño y mips de las texturas), `verts.bin`, `idx.bin`, `tex_base.bin`, `tex_normal.bin`, `tex_orm.bin` y, si hay suelo, `ground_base.bin`, `ground_normal.bin`.
 
-Se carga con `loadPackage(dir)` de `web/phoenix.js`.
+El cargador JS de estos paquetes se retiró con Phoenix (ver [FASE9.md](FASE9.md)); el formato sigue documentado aquí.
 
 ## Piezas modulares (interiores)
 

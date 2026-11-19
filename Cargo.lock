@@ -511,20 +511,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoenix"
-version = "0.0.1"
-dependencies = [
- "bytemuck",
- "console_error_panic_hook",
- "glam",
- "phoenyx-lux",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "wgpu",
-]
-
-[[package]]
 name = "phoenix-ai"
 version = "0.0.1"
 dependencies = [

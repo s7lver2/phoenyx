@@ -103,3 +103,10 @@
 
 ## Cobertura del diseño
 Fase A → Tareas 1–2; Fase B → 3–6; Fase C → 7; Fase D → 8. «Iluminación legacy intacta» → restricciones globales y Tarea 7 (`'legacy'` por defecto).
+
+## Ledger
+- T1–T3: hechas (commits 1e03d4a, b996547).
+- T4/T5: Ruling: el bake es `tools/bake_lods.mjs` del juego (Node) y no `phoenyx-bake` (Rust): los GLB del juego van con meshopt y el crate `gltf` no los lee; los LOD son índices sobre la malla fundida por material, no un paquete aparte ni `setModelPackage`.
+- T6: hecho en el juego (niebla y PROP_FAR).
+- T7: Ruling: diferida; `phoenyx-lux` queda como crate independiente sin conectar (ver FASE9.md).
+- T8: hecho; Phoenix borrado.
