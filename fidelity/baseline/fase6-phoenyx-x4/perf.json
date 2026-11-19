@@ -1,0 +1,161 @@
+{
+  "url": "http://localhost:5200/fidelity",
+  "preset": "high",
+  "throttle": 4,
+  "perf": {
+    "sh-prueba": {
+      "drawCalls": 22,
+      "triangles": 224,
+      "geometries": 21,
+      "textures": 3,
+      "frameMsMedian": 2.9,
+      "frameMsP95": 6.5,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-vhs": {
+      "drawCalls": 19,
+      "triangles": 208,
+      "geometries": 18,
+      "textures": 3,
+      "frameMsMedian": 3.1,
+      "frameMsP95": 4.6,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-waterjet": {
+      "drawCalls": 20,
+      "triangles": 208,
+      "geometries": 19,
+      "textures": 0,
+      "frameMsMedian": 2.3,
+      "frameMsP95": 3.5,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-parking-atm": {
+      "drawCalls": 23,
+      "triangles": 328,
+      "geometries": 22,
+      "textures": 0,
+      "frameMsMedian": 2.3,
+      "frameMsP95": 3.5,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-remote": {
+      "drawCalls": 23,
+      "triangles": 368,
+      "geometries": 22,
+      "textures": 0,
+      "frameMsMedian": 2.9,
+      "frameMsP95": 4.7,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-vents": {
+      "drawCalls": 20,
+      "triangles": 208,
+      "geometries": 19,
+      "textures": 1,
+      "frameMsMedian": 2.3,
+      "frameMsP95": 3.5,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-dust-cam": {
+      "drawCalls": 20,
+      "triangles": 208,
+      "geometries": 19,
+      "textures": 0,
+      "frameMsMedian": 2.2,
+      "frameMsP95": 3.2,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-dust-world": {
+      "drawCalls": 20,
+      "triangles": 208,
+      "geometries": 19,
+      "textures": 0,
+      "frameMsMedian": 2.3,
+      "frameMsP95": 3.4,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-world-shaft": {
+      "drawCalls": 20,
+      "triangles": 328,
+      "geometries": 19,
+      "textures": 0,
+      "frameMsMedian": 2.1,
+      "frameMsP95": 3.4,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-world-sky": {
+      "drawCalls": 20,
+      "triangles": 1456,
+      "geometries": 19,
+      "textures": 0,
+      "frameMsMedian": 2.4,
+      "frameMsP95": 3.8,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-cosmetics": {
+      "drawCalls": 22,
+      "triangles": 244,
+      "geometries": 21,
+      "textures": 1,
+      "frameMsMedian": 2.7,
+      "frameMsP95": 3.9,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-lightmap": {
+      "drawCalls": 23,
+      "triangles": 284,
+      "geometries": 22,
+      "textures": 0,
+      "frameMsMedian": 2.6,
+      "frameMsP95": 3.8,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-concrete": {
+      "drawCalls": 21,
+      "triangles": 232,
+      "geometries": 20,
+      "textures": 0,
+      "frameMsMedian": 2.4,
+      "frameMsP95": 3.6,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    },
+    "sh-pooltile": {
+      "drawCalls": 22,
+      "triangles": 224,
+      "geometries": 21,
+      "textures": 1,
+      "frameMsMedian": 2.2,
+      "frameMsP95": 3.4,
+      "cpuMsRender": null,
+      "resScale": null,
+      "gpu": null
+    }
+  }
+}
