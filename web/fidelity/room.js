@@ -19,6 +19,7 @@ import { makeCamDust, makeWorldDust } from './games/dust.js';
 import { makeWorldShafts, makeWorldSky } from './games/worldSky.js';
 import { Reflector } from 'three/examples/jsm/objects/Reflector.js';
 import { makePoolWater } from './games/poolWater.js';
+import { makePoolMapWater } from './games/poolMapWater.js';
 import { makeParkingAtmosphere } from './games/parkingAtmosphere.js';
 import { LM, lightmapped, makeLightmap, cosTint, poolTile, concrete, parkingDust } from './games/patches.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
@@ -633,6 +634,16 @@ if (sceneId === 'sh-pool-water') {
   scene.add(makePoolWater(THREE, Reflector, { cam: camera.position }));
   const o = new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 16), new THREE.MeshStandardMaterial({ color: 0xc04060, roughness: 0.4 }));
   o.position.set(-1.2, 0.9, 0.5);
+  scene.add(o);
+}
+
+// ---- escenas 'sh-poolmap-water' (agua de poolmap.ts: profundidad y borde por vertice) y 'sh-poolmap-water-under' (vista desde abajo: cara trasera) ----
+if (sceneId === 'sh-poolmap-water' || sceneId === 'sh-poolmap-water-under') {
+  const under = sceneId.endsWith('under');
+  if (under) camera.position.set(0.5, 0.3, 3.6), camera.lookAt(0, 1.0, -1);
+  scene.add(makePoolMapWater(THREE, Reflector, { cam: camera.position, y: under ? 1.0 : 0.05 }));
+  const o = new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 16), new THREE.MeshStandardMaterial({ color: 0x4060d0, roughness: 0.4 }));
+  o.position.set(1.2, 0.9, -0.5);
   scene.add(o);
 }
 

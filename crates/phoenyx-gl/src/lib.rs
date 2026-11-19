@@ -215,6 +215,8 @@ fn user_src(id: u32) -> Option<(String, bool)> {
         22 => (include_str!("user/line_basic.wgsl").to_string(), false),
         // agua de pool.ts (PoolWater, con el reflejo del Reflector en t0)
         30 => (include_str!("user/pool_water.wgsl").to_string(), false),
+        // agua del mapa de las Poolrooms (poolmap.ts)
+        31 => (include_str!("user/pool_map_water.wgsl").to_string(), false),
         _ => return None,
     })
 }

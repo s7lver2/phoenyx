@@ -60,5 +60,7 @@
   { "id": "sh-points-patch", "query": "renderer=@R&scene=sh-points-patch&fog=exp", "advance": 2, "nota": "polvo del parking: PointsMaterial + onBeforeCompile (movimiento por uDustTime)" },
   { "id": "sh-physical", "query": "renderer=@R&scene=sh-physical&fog=exp", "advance": 2, "nota": "MeshPhysicalMaterial: clearcoat, sheen, specularIntensity e ior con luces directas" },
   { "id": "sh-ibl", "query": "renderer=@R&scene=sh-ibl&fog=exp", "advance": 2, "nota": "scene.environment con PMREMGenerator: reflejos y luz difusa del entorno en Standard y Physical" },
-  { "id": "sh-pool-water", "query": "renderer=@R&scene=sh-pool-water&fog=exp", "advance": 2, "nota": "agua de pool.ts: Reflector (render anidado a HalfFloat) + shader PoolWater" }
+  { "id": "sh-pool-water", "query": "renderer=@R&scene=sh-pool-water&fog=exp", "advance": 2, "nota": "agua de pool.ts: Reflector (render anidado a HalfFloat) + shader PoolWater" },
+  { "id": "sh-poolmap-water", "query": "renderer=@R&scene=sh-poolmap-water&fog=exp", "advance": 2, "nota": "agua de poolmap.ts: profundidad y borde por vertice" },
+  { "id": "sh-poolmap-water-under", "query": "renderer=@R&scene=sh-poolmap-water-under&fog=exp", "advance": 2, "nota": "agua de poolmap.ts vista desde abajo (cara trasera; el Reflector no pinta)" }
 ]
