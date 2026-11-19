@@ -36,6 +36,7 @@ let failed = 0;
 for (const s of scenes) {
   for (const f of [`${s.id}.png`, `${s.id}-error.png`]) fs.rmSync(path.join(out, f), { force: true }); // sin restos de ejecuciones anteriores
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+  await ctx.addInitScript(() => localStorage.setItem('br-welcome', '1')); // (sin el aviso de invitado, que tapa el boton PLAY)
   const page = await ctx.newPage();
   try {
     if (throttle > 1) {
