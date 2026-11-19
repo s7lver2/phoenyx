@@ -144,6 +144,8 @@ export class Packer {
         const ns = m.normalScale;
         // parche de material (onBeforeCompile portado): su id y la plaza con sus uniformes, la siguiente a la del material
         const pa = std ? patchInfo(m) : null;
+        // MeshPhysicalMaterial: plaza con ior, specular, clearcoat y sheen (la sigue a la del parche, si hay)
+        const phys = m.isMeshPhysicalMaterial;
         matData.push(
           c.r, c.g, c.b, m.opacity,
           e && std ? e.r * k : 0, e && std ? e.g * k : 0, e && std ? e.b * k : 0, std ? m.roughness : 1,
@@ -151,11 +153,22 @@ export class Packer {
           m.alphaTest > 0 ? m.alphaTest : 0, ns ? ns.x : 1, ns ? ns.y : 1, m.bumpScale ?? 1,
           mask, 0, 0, 0,
           ...uv,
-          pa ? pa.id : 0, pa ? nslot : 0, 0, 0,
+          pa ? pa.id : 0, pa ? nslot : 0, phys ? nslot + (pa ? 1 : 0) : 0, 0,
         );
         if (pa) {
           nslot++;
           matData.push(...pa.extras);
+          while (matData.length < nslot * MATERIAL_F) matData.push(0);
+        }
+        if (phys) {
+          nslot++;
+          const sc = m.specularColor, shc = m.sheenColor, sh = m.sheen > 0 ? m.sheen : 0;
+          matData.push(
+            m.ior, m.specularIntensity, m.clearcoat, m.clearcoatRoughness,
+            sc.r, sc.g, sc.b, sh,
+            shc.r * sh, shc.g * sh, shc.b * sh, m.sheenRoughness,
+            m.envMapIntensity ?? 1, 0, 0, 0,
+          );
           while (matData.length < nslot * MATERIAL_F) matData.push(0);
         }
       }

@@ -305,7 +305,74 @@ struct PhysMat {
     roughness: f32,
     specularColor: vec3<f32>,
     specularF90: f32,
+    clearcoat: f32,
+    clearcoatRoughness: f32,
+    sheenColor: vec3<f32>,
+    sheenRoughness: f32,
 };
+
+const PI = 3.141592653589793;
+
+// ---- lights_physical_pars_fragment: clearcoat (BRDF_GGX_Clearcoat), sheen (D_Charlie, V_Neubelt, BRDF_Sheen, IBLSheenBRDF) y DFG ----
+fn BRDF_GGX_Clearcoat(lightDir: vec3<f32>, viewDir: vec3<f32>, normal: vec3<f32>, material: PhysMat) -> vec3<f32> {
+    let f0 = vec3<f32>(0.04);
+    let alpha = pow2(material.clearcoatRoughness);
+    let halfDir = normalize(lightDir + viewDir);
+    let dotNL = saturate(dot(normal, lightDir));
+    let dotNV = saturate(dot(normal, viewDir));
+    let dotNH = saturate(dot(normal, halfDir));
+    let dotVH = saturate(dot(viewDir, halfDir));
+    let F = F_Schlick(f0, 1.0, dotVH);
+    let V = V_GGX_SmithCorrelated(alpha, dotNL, dotNV);
+    let D = D_GGX(alpha, dotNH);
+    return F * (V * D);
+}
+
+fn D_Charlie(roughness: f32, dotNH: f32) -> f32 {
+    let alpha = pow2(roughness);
+    let invAlpha = 1.0 / alpha;
+    let cos2h = dotNH * dotNH;
+    let sin2h = max(1.0 - cos2h, 0.0078125);
+    return (2.0 + invAlpha) * pow(sin2h, invAlpha * 0.5) / (2.0 * PI);
+}
+
+fn V_Neubelt(dotNV: f32, dotNL: f32) -> f32 {
+    return saturate(1.0 / (4.0 * (dotNL + dotNV - dotNL * dotNV)));
+}
+
+fn BRDF_Sheen(lightDir: vec3<f32>, viewDir: vec3<f32>, normal: vec3<f32>, sheenColor: vec3<f32>, sheenRoughness: f32) -> vec3<f32> {
+    let halfDir = normalize(lightDir + viewDir);
+    let dotNL = saturate(dot(normal, lightDir));
+    let dotNV = saturate(dot(normal, viewDir));
+    let dotNH = saturate(dot(normal, halfDir));
+    let D = D_Charlie(sheenRoughness, dotNH);
+    let V = V_Neubelt(dotNV, dotNL);
+    return sheenColor * (D * V);
+}
+
+fn IBLSheenBRDF(normal: vec3<f32>, viewDir: vec3<f32>, roughness: f32) -> f32 {
+    let dotNV = saturate(dot(normal, viewDir));
+    let r2 = roughness * roughness;
+    let lo = roughness < 0.25;
+    let a = select(-8.48 * r2 + 14.3 * roughness - 9.95, -339.2 * r2 + 161.4 * roughness - 25.9, lo);
+    let b = select(1.97 * r2 - 3.27 * roughness + 0.72, 44.0 * r2 - 23.7 * roughness + 3.26, lo);
+    let DG = exp(a * dotNV + b) + select(0.1 * (roughness - 0.25), 0.0, lo);
+    return saturate(DG * RECIPROCAL_PI);
+}
+
+fn DFGApprox(normal: vec3<f32>, viewDir: vec3<f32>, roughness: f32) -> vec2<f32> {
+    let dotNV = saturate(dot(normal, viewDir));
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let r = roughness * c0 + c1;
+    let a004 = min(r.x * r.x, exp2(-9.28 * dotNV)) * r.x + r.y;
+    return vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+}
+
+fn EnvironmentBRDF(normal: vec3<f32>, viewDir: vec3<f32>, specularColor: vec3<f32>, specularF90: f32, roughness: f32) -> vec3<f32> {
+    let fab = DFGApprox(normal, viewDir, roughness);
+    return specularColor * fab.x + specularF90 * fab.y;
+}
 
 // ---- RectAreaLight: tablas LTC (lights_physical_pars_fragment), muestreadas con bilinear a mano (Rgba32Float no filtrable) ----
 // el lightmap del parche de luz de lightmap.ts (se sube con set_lightmap): textura de luz (rgb, a = oclusion) y de tubos que parpadean
@@ -553,6 +620,7 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         if (doubleSided) {
             normal = normal * faceDirection;
         }
+        let nonPerturbedNormal = normal;   // clearcoat_normal_fragment_begin: clearcoatNormal = nonPerturbedNormal
         if ((maps & 2u) != 0u) {
             // normalmap_pars_fragment: getTangentFrame (sin tangentes precalculadas) y espacio tangente
             let N = normal;
@@ -601,6 +669,37 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         }
         material.specularColor = mix(vec3<f32>(0.04), diffuse, metalnessFactor);
         material.specularF90 = 1.0;
+        material.clearcoat = 0.0;
+        material.clearcoatRoughness = 0.0;
+        material.sheenColor = vec3<f32>(0.0);
+        material.sheenRoughness = 1.0;
+        // MeshPhysicalMaterial: ior + specularIntensity/specularColor (lights_physical_fragment con IOR y USE_SPECULAR), clearcoat y sheen
+        let phSlot = u32(m.pad.z);
+        var hasCC = false;
+        var hasSheen = false;
+        var envK = 1.0;
+        if (phSlot != 0u) {
+            let ph = materials[phSlot];
+            let ior = ph.color.x;
+            let specI = ph.color.y;
+            material.specularF90 = mix(specI, 1.0, metalnessFactor);
+            material.specularColor = mix(min(pow2((ior - 1.0) / (ior + 1.0)) * ph.emissive.rgb, vec3<f32>(1.0)) * specI, diffuse, metalnessFactor);
+            hasCC = ph.color.z > 0.0;
+            hasSheen = ph.emissive.w > 0.0;
+            if (hasCC) {
+                material.clearcoat = saturate(ph.color.z);
+                material.clearcoatRoughness = min(max(ph.color.w, 0.0525) + geometryRoughness, 1.0);
+            }
+            if (hasSheen) {
+                material.sheenColor = ph.misc.rgb;
+                material.sheenRoughness = clamp(ph.misc.w, 0.07, 1.0);
+            }
+            envK = ph.tp.x;
+        }
+        if (pid == 4u) {
+            // poolTile (tras lights_physical_fragment): el clearcoat solo en los suelos
+            material.clearcoat = material.clearcoat * sstep(0.6, 0.9, in.wnrm.y);
+        }
 
         // lights_fragment_begin
         let geometryPosition = in.vpos;
@@ -609,6 +708,8 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
         var directDiffuse = vec3<f32>(0.0);
         var directSpecular = vec3<f32>(0.0);
         var hemiIrradiance = vec3<f32>(0.0);
+        var clearcoatSpecularDirect = vec3<f32>(0.0);
+        var sheenSpecularDirect = vec3<f32>(0.0);
         let nl = u32(g.dim.z);
         for (var i = 0u; i < nl; i = i + 1u) {
             let l = lights[i];
@@ -664,15 +765,63 @@ fn fs(in: VOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f
                 // RE_Direct_Physical
                 let dotNL = saturate(dot(normal, dirL));
                 let irradiance = dotNL * col;
+                if (hasCC) {
+                    let ccIrradiance = saturate(dot(nonPerturbedNormal, dirL)) * col;
+                    clearcoatSpecularDirect += ccIrradiance * BRDF_GGX_Clearcoat(dirL, geometryViewDir, nonPerturbedNormal, material);
+                }
+                if (hasSheen) {
+                    sheenSpecularDirect += irradiance * BRDF_Sheen(dirL, geometryViewDir, normal, material.sheenColor, material.sheenRoughness);
+                }
                 directSpecular += irradiance * BRDF_GGX(dirL, geometryViewDir, normal, material);
                 directDiffuse += irradiance * BRDF_Lambert(material.diffuseColor);
             }
         }
         // RE_IndirectDiffuse_Physical con la luz ambiente
-        let indirectDiffuse = (g.amb.rgb + hemiIrradiance) * BRDF_Lambert(material.diffuseColor);
+        var indirectDiffuse = (g.amb.rgb + hemiIrradiance) * BRDF_Lambert(material.diffuseColor);
+        // RE_IndirectSpecular_Physical: sin entorno (scene.environment) la radiancia y la irradiancia de entorno son 0
+        let iblIrradiance = vec3<f32>(0.0);
+        let radiance = vec3<f32>(0.0);
+        let clearcoatRadiance = vec3<f32>(0.0);
+        var clearcoatSpecularIndirect = vec3<f32>(0.0);
+        var sheenSpecularIndirect = vec3<f32>(0.0);
+        if (hasCC) {
+            clearcoatSpecularIndirect = clearcoatRadiance * EnvironmentBRDF(nonPerturbedNormal, geometryViewDir, vec3<f32>(0.04), 1.0, material.clearcoatRoughness);
+        }
+        if (hasSheen) {
+            sheenSpecularIndirect = iblIrradiance * material.sheenColor * IBLSheenBRDF(normal, geometryViewDir, material.sheenRoughness);
+        }
+        var singleScattering = vec3<f32>(0.0);
+        var multiScattering = vec3<f32>(0.0);
+        let cosineWeightedIrradiance = iblIrradiance * RECIPROCAL_PI;
+        {
+            // computeMultiscattering
+            let fab = DFGApprox(normal, geometryViewDir, material.roughness);
+            let Fr = material.specularColor;
+            let FssEss = Fr * fab.x + material.specularF90 * fab.y;
+            let Ess = fab.x + fab.y;
+            let Ems = 1.0 - Ess;
+            let Favg = Fr + (1.0 - Fr) * 0.047619;
+            let Fms = FssEss * Favg / (1.0 - Ems * Favg);
+            singleScattering += FssEss;
+            multiScattering += Fms * Ems;
+        }
+        let totalScattering = singleScattering + multiScattering;
+        let diffuseInd = material.diffuseColor * (1.0 - max(max(totalScattering.r, totalScattering.g), totalScattering.b));
+        let indirectSpecular = radiance * singleScattering + multiScattering * cosineWeightedIrradiance;
+        indirectDiffuse += diffuseInd * cosineWeightedIrradiance;
         let totalDiffuse = directDiffuse + indirectDiffuse;
         let emissive = m.emissive.rgb * select(vec3<f32>(1.0), sEmis.rgb, (maps & 8u) != 0u);
-        rgb = totalDiffuse + directSpecular + emissive;
+        rgb = totalDiffuse + (directSpecular + indirectSpecular) + emissive;
+        if (hasSheen) {
+            // energia de sheen: 1 - 0.157 * max3(sheenColor)
+            let sheenEnergyComp = 1.0 - 0.157 * max(max(material.sheenColor.r, material.sheenColor.g), material.sheenColor.b);
+            rgb = rgb * sheenEnergyComp + sheenSpecularDirect + sheenSpecularIndirect;
+        }
+        if (hasCC) {
+            let dotNVcc = saturate(dot(nonPerturbedNormal, geometryViewDir));
+            let Fcc = F_Schlick(vec3<f32>(0.04), 1.0, dotNVcc);
+            rgb = rgb * (1.0 - material.clearcoat * Fcc) + (clearcoatSpecularDirect + clearcoatSpecularIndirect) * material.clearcoat;
+        }
     }
 
     // lightmap.ts (antes de opaque_fragment): la luz horneada del mapa. pe0 = uFlick; pe1 = (uLmSize.xy, uLmGain, _)

@@ -626,6 +626,23 @@ if (sceneId === 'sh-dust-world') scene.add(makeWorldDust(THREE, { t: 13.9 }));
 if (sceneId === 'sh-world-shaft') scene.add(makeWorldShafts(THREE));
 if (sceneId === 'sh-world-sky') scene.add(makeWorldSky(THREE, { t: 9 }));
 
+// ---- escena 'sh-physical': MeshPhysicalMaterial (clearcoat, sheen, specularIntensity, ior), solo con luces directas ----
+if (sceneId === 'sh-physical') {
+  const mats = [
+    { color: 0x3cc6c0, roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.05 },
+    { color: 0xb09050, roughness: 0.6, clearcoat: 0.7, clearcoatRoughness: 0.28, specularIntensity: 0.5 },
+    { color: 0xc04060, roughness: 0.34, clearcoat: 0.6, clearcoatRoughness: 0.22, sheen: 0.4, sheenColor: new THREE.Color(0xe0a0b0) },
+    { color: 0x808080, roughness: 0.7, metalness: 0.08, specularIntensity: 0.15, clearcoat: 0.08, clearcoatRoughness: 0.65 },
+    { color: 0xd0d0d0, roughness: 0.3, metalness: 1, specularIntensity: 0.5, ior: 2.0 },
+    { color: 0x4060d0, roughness: 0.5, sheen: 1, sheenRoughness: 0.4, sheenColor: new THREE.Color(0xffffff) },
+  ];
+  mats.forEach((p, i) => {
+    const o = new THREE.Mesh(new THREE.SphereGeometry(0.55, 40, 24), new THREE.MeshPhysicalMaterial(p));
+    o.position.set(-3.5 + i * 1.4, 1.0, 0.2);
+    scene.add(o);
+  });
+}
+
 // ---- escena 'sh-points': PointsMaterial con sus variantes del juego (tamano en mundo con atenuacion, mapa con alphaTest, color por vertice, aditivo, sin atenuacion) ----
 if (sceneId === 'sh-points') {
   let seed = 12345;
@@ -752,7 +769,7 @@ if (sceneId === 'sh-pooltile') {
   });
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(4, 4);
-  const m = new THREE.MeshPhysicalMaterial({ map: t, roughness: 0.5, metalness: 0, vertexColors: true, clearcoat: 0.0001 });
+  const m = new THREE.MeshPhysicalMaterial({ map: t, roughness: 0.5, metalness: 0, vertexColors: true, clearcoat: 0.7, specularIntensity: 0.5, clearcoatRoughness: 0.28 });
   if (q.get('np') !== '1') poolTile(THREE, m);
   const white = (g) => g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 3).fill(1), 3));
   const gf = new THREE.PlaneGeometry(10, 10).rotateX(-Math.PI / 2); white(gf);
