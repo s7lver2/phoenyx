@@ -56,5 +56,6 @@
   { "id": "sh-pooltile-np", "query": "renderer=@R&scene=sh-pooltile&np=1&fog=exp", "advance": 2, "nota": "baldosa sin parche: MeshPhysicalMaterial pelado (diagnostico)" },
   { "id": "sh-points", "query": "renderer=@R&scene=sh-points&fog=exp", "advance": 2, "nota": "PointsMaterial: color, aditivo, mapa con alphaTest, color por vertice, sin atenuacion" },
   { "id": "sh-sprite", "query": "renderer=@R&scene=sh-sprite&fog=exp", "advance": 2, "nota": "SpriteMaterial: halo aditivo, humo, etiqueta rotada, sin atenuacion, centro y alphaTest" },
-  { "id": "sh-line", "query": "renderer=@R&scene=sh-line&fog=exp", "advance": 2, "nota": "LineBasicMaterial: segmentos, tira con color por vertice, lazo, rayos X" }
+  { "id": "sh-line", "query": "renderer=@R&scene=sh-line&fog=exp", "advance": 2, "nota": "LineBasicMaterial: segmentos, tira con color por vertice, lazo, rayos X" },
+  { "id": "sh-points-patch", "query": "renderer=@R&scene=sh-points-patch&fog=exp", "advance": 2, "nota": "polvo del parking: PointsMaterial + onBeforeCompile (movimiento por uDustTime)" }
 ]

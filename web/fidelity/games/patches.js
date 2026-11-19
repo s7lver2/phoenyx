@@ -98,3 +98,15 @@ export function concrete(m) {
   m.onBeforeCompile = shader => { shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = max(roughnessFactor,.85);'); };
   return m;
 }
+export function parkingDust(material, time) {
+  material.onBeforeCompile = shader => {
+      shader.uniforms.uDustTime = time;
+      shader.vertexShader = 'uniform float uDustTime;\n' + shader.vertexShader.replace('#include <begin_vertex>', `
+        #include <begin_vertex>
+        float phase = dot(position, vec3(0.93, 1.7, 0.81));
+        transformed += vec3(sin(uDustTime * 0.34 + phase), cos(uDustTime * 0.29 + phase),
+                            sin(uDustTime * 0.23 + phase)) * vec3(0.17, 0.08, 0.14);
+      `);
+    };
+  return material;
+}

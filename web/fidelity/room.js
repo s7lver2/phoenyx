@@ -18,7 +18,7 @@ import { makeVentGas } from './games/vents.js';
 import { makeCamDust, makeWorldDust } from './games/dust.js';
 import { makeWorldShafts, makeWorldSky } from './games/worldSky.js';
 import { makeParkingAtmosphere } from './games/parkingAtmosphere.js';
-import { LM, lightmapped, makeLightmap, cosTint, poolTile, concrete } from './games/patches.js';
+import { LM, lightmapped, makeLightmap, cosTint, poolTile, concrete, parkingDust } from './games/patches.js';
 import { FilmShader, VhsShader } from './games/vhsPass.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -653,6 +653,17 @@ if (sceneId === 'sh-points') {
   mk(cloud(60, -3.2, 1.2, 1, 2, true), new THREE.PointsMaterial({ size: 0.15, vertexColors: true }), 0);
   mk(cloud(40, 0, 1.2, 1, 2), new THREE.PointsMaterial({ color: 0xffffff, size: 12, sizeAttenuation: false, depthTest: false, toneMapped: false }), 0);
   mk(cloud(60, 3.2, 1.2, 1, 2), new THREE.PointsMaterial({ color: 0xffe8b0, size: 0.35, map: dot, transparent: true, opacity: 0.6, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }), 0);
+}
+
+// ---- escena 'sh-points-patch': el polvo del parking (PointsMaterial con onBeforeCompile que mueve los puntos por uDustTime) ----
+if (sceneId === 'sh-points-patch') {
+  const time = { value: 37.5 };
+  const m = parkingDust(new THREE.PointsMaterial({ color: 0x40e0ff, size: 0.12, transparent: true, opacity: 0.9, depthWrite: false }), time);
+  const pts = [];
+  for (let i = 0; i < 300; i++) pts.push(-4 + ((i * 37) % 80) * 0.1, 0.3 + ((i * 53) % 25) * 0.1, -4 + ((i * 71) % 80) * 0.1);
+  const o = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)), m);
+  o.frustumCulled = false;
+  scene.add(o);
 }
 
 // ---- escena 'sh-sprite': SpriteMaterial (halo aditivo sin niebla, humo con opacidad, etiqueta con textura y rotacion, sin atenuacion, centro desplazado) ----

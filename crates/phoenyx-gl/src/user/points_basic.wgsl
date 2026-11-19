@@ -3,7 +3,8 @@
 //   v1 = (size en px = size * pixelRatio, scale = alto CSS / 2, sizeAttenuation, toneMapped)
 //   v2 = (color.rgb, opacity)
 //   v3 = (uvTransform e0, e1, e3, e4), v4 = (uvTransform e6, e7, hay map, alphaTest)
-//   v5 = (vertexColors, opaco (no transparent y mezcla normal), _, _)
+//   v5 = (vertexColors, opaco (no transparent y mezcla normal), parche, valor del parche)
+//   parche 5: polvo del parking (parking.ts, addDust): la posicion se mueve por uDustTime (= valor) antes de proyectar
 // Atributos: position y color (hueco color del vertice).
 
 struct VOut {
@@ -20,7 +21,13 @@ fn vs_user(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let pt = vi / 6u;
     let c = corner(vi % 6u);
     let u1 = ub(di, 1u);
-    let mv = g.view * modelOf(di) * vec4<f32>(vpos(pt), 1.0);
+    var p = vpos(pt);
+    let u5 = ub(di, 5u);
+    if (u5.z > 4.5 && u5.z < 5.5) {
+        let phase = dot(p, vec3<f32>(0.93, 1.7, 0.81));
+        p += vec3<f32>(sin(u5.w * 0.34 + phase), cos(u5.w * 0.29 + phase), sin(u5.w * 0.23 + phase)) * vec3<f32>(0.17, 0.08, 0.14);
+    }
+    let mv = g.view * modelOf(di) * vec4<f32>(p, 1.0);
     var size = u1.x;
     // sizeAttenuation: solo con proyeccion en perspectiva (isPerspectiveMatrix: projectionMatrix[2][3] == -1)
     if (u1.z > 0.5 && g.proj[2][3] == -1.0) {

@@ -52,11 +52,14 @@ registerPatch('c731af62', { id: 3, name: 'concrete', pack: () => [0, 0, 0, 0, 0,
 // 4: baldosa de las Poolrooms (game/poolmap.ts, poolTile)
 registerPatch('bc1b8b34', { id: 4, name: 'poolTile', pack: () => [0, 0, 0, 0, 0, 0, 0, 0] });
 
+// 5: polvo anclado del parking (game/parking.ts, addDust: PointsMaterial); el valor va en pack()[0] y lo lee points_basic.wgsl
+registerPatch('9bd29522', { id: 5, name: 'parking-dust', pack: (u) => [u.uDustTime.value, 0, 0, 0, 0, 0, 0, 0] });
+
 const cache = new WeakMap<object, { def: PatchDef; uniforms: any } | null>();
 
 /** El parche portado de un material estandar (con sus uniformes vivos) o null si no tiene `onBeforeCompile` propio o no se conoce. */
 export function patchOf(m: any, renderer: any): { def: PatchDef; uniforms: any } | null {
-  if (!m.isMeshStandardMaterial || !Object.prototype.hasOwnProperty.call(m, 'onBeforeCompile')) return null;
+  if (!(m.isMeshStandardMaterial || m.isPointsMaterial) || !Object.prototype.hasOwnProperty.call(m, 'onBeforeCompile')) return null;
   let r = cache.get(m);
   if (r !== undefined) return r;
   r = null;

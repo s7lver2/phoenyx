@@ -227,7 +227,7 @@ export class WebGLRenderer {
   private patchState = { lmKey: '' };
 
   private userInfo(m: any) {
-    const def = userShaderOf(m, { pixelRatio: this.pixelRatio, height: this.height });
+    const def = userShaderOf(m, { pixelRatio: this.pixelRatio, height: this.height, patch: (pm) => { const p = patchOf(pm, this); return p ? { id: p.def.id, value: p.def.pack(p.uniforms)[0] } : null; } });
     if (!def) return null;
     const b = blendOf(m);
     return {
