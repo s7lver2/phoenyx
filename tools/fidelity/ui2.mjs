@@ -1,0 +1,21 @@
+import { chromium } from 'playwright-core';
+const port = process.argv[2] ?? '5192';
+const b = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: false, args: ['--enable-gpu','--use-angle=default','--ignore-gpu-blocklist'] });
+const page = await (await b.newContext({ viewport: { width: 1280, height: 720 } })).newPage();
+page.on('console', (m) => ['error'].includes(m.type()) && console.log('[c]', m.text().slice(0, 250)));
+page.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 400)));
+await page.goto(`http://localhost:${port}/`);
+await page.waitForTimeout(8000);
+await page.getByText('LATER', { exact: true }).first().click().catch(() => {});
+await page.getByText('PLAY', { exact: true }).first().click();
+await page.waitForTimeout(2500);
+console.log((await page.innerText('body')).slice(0, 500));
+await page.screenshot({ path: `/tmp/ui-${port}-a.png` });
+for (const t of ['SOLO', 'PLAY SOLO', 'SINGLE', 'CREATE']) { const l = page.getByText(t, { exact: false }).first(); if (await l.isVisible().catch(() => false)) { console.log('click', t); await l.click(); break; } }
+await page.waitForTimeout(3000);
+console.log('---\n' + (await page.innerText('body')).slice(0, 500));
+await page.screenshot({ path: `/tmp/ui-${port}-b.png` });
+await page.waitForTimeout(15000);
+await page.screenshot({ path: `/tmp/ui-${port}-c.png` });
+console.log('--- tras 15s\n' + (await page.innerText('body')).slice(0, 300));
+await b.close();

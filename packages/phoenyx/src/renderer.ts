@@ -130,7 +130,7 @@ export class WebGLRenderer {
     return {
       LINK_STATUS: 0x8b82,
       canvas: this.domElement,
-      isContextLost: () => !self.gl || self.gl.is_lost(),
+      isContextLost: () => !!self.gl && self.gl.is_lost(),
       getExtension: (name: string) => (name === 'WEBGL_debug_renderer_info' ? { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 } : null),
       getParameter: (p: number) => (p === 0x9246 ? 'Phoenyx (WebGPU)' : p === 0x9245 ? 'phoenyx' : null),
       getProgramParameter: () => true,
