@@ -636,7 +636,10 @@ fn fs_aoblend(in: VOut) -> @location(0) vec4<f32> {
 // ---- FilmShader del juego (client/src/game/vhsPass.ts) ----
 // u[0] = (uTime, uMove, uMad, uVhs); u[1] = (uWarm, uRes.x, uRes.y, 0). t0 = tDiffuse
 fn hash2(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    // (Hoskins: sin(dot) dibujaba rayas diagonales en el grano con coordenadas grandes; el GLSL del juego sigue con el de siempre)
+    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
 
 @fragment
@@ -729,12 +732,11 @@ fn fs_vhs(in: VOut) -> @location(0) vec4<f32> {
     col = col * 0.9 + mix(vec3<f32>(0.05, 0.05, 0.02), vec3<f32>(0.03, 0.04, 0.05), uPool);
     col *= mix(vec3<f32>(1.0, 1.03, 0.84), vec3<f32>(0.97, 1.0, 1.03), uPool);
     // estatica
-    let g = hash2(floor(vUv * uRes / 1.5) + t * 1.31);
+    let g = hash2(floor(vUv * uRes / 2.0) + t * 1.31);
     col += (g - 0.5) * (0.11 + band * 0.3 + head * 0.5);
     col += step(0.9985, hash2(vec2<f32>(row, t * 0.7))) * step(0.6, hash2(vec2<f32>(floor(vUv.x * 7.0), t + row))) * 0.45 * uMove;
     col = mix(col, vec3<f32>(g), smoothstep(0.55, 1.0, uCorrupt) * 0.9);
-    // lineas de barrido, la banda mas clara y el vigneteado
-    col *= 0.94 + 0.06 * (1.0 - uPool) * sin(vUv.y * uRes.y * 1.5);
+    // (sin lineas de barrido: con la pantalla a 1,25x hacian una trama diagonal muy notable) la banda mas clara y el vigneteado
     col += band * 0.06;
     let v = vUv - 0.5;
     col *= 1.0 - dot(v, v) * 0.9;
