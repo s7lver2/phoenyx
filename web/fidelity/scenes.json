@@ -1,4 +1,6 @@
 [
+  {"id": "inst-lod", "query": "renderer=@R&scene=inst-lod", "advance": 2, "nota": "2400 esferas instanciadas con 3 LOD (culling y LOD en GPU en Phoenyx)"},
+  {"id": "inst-lod-off", "query": "renderer=@R&scene=inst-lod&gpu=0", "advance": 2, "nota": "lo mismo con el camino GPU apagado (LOD 0 en todas)"},
   {"id": "sala-exp", "query": "renderer=@R&scene=exp", "advance": 2, "nota": "sala con FogExp2"},
   {"id": "sala-lineal", "query": "renderer=@R&scene=lineal", "advance": 2, "nota": "sala con Fog lineal"},
   {"id": "sala-sinniebla", "query": "renderer=@R&scene=nofog", "advance": 2, "nota": "sala sin niebla"},

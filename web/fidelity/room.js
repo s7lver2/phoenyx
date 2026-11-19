@@ -286,6 +286,28 @@ if (sceneId === 'inst') {
   scene.add(g2);
 }
 
+// ---- inst-lod: culling y LOD en GPU (Phoenyx; three ignora userData.gpuLods y dibuja el LOD 0). &gpu=0 apaga el camino GPU ----
+if (sceneId === 'inst-lod') {
+  renderer.gpuDriven = q.get('gpu') !== '0';
+  const R = 0.25, mk = (w, h) => new THREE.SphereGeometry(R, w, h);
+  // error de cada LOD en unidades del modelo: la flecha del arco entre vertices (R * (1 - cos(pi / segmentos)))
+  const geo = mk(24, 16);
+  geo.userData = {};
+  const im = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ color: 0xc8a060, roughness: 0.5, metalness: 0.1 }), 2400);
+  im.userData.gpuLods = [{ geometry: mk(12, 8), error: R * (1 - Math.cos(Math.PI / 12)) }, { geometry: mk(6, 4), error: R * (1 - Math.cos(Math.PI / 6)) }];
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 2400; i++) {
+    dummy.position.set((i % 12) * 0.9 - 5, 0.3, -Math.floor(i / 12) * 0.9);
+    dummy.rotation.set(0, i * 0.3, 0);
+    dummy.scale.setScalar(0.8 + 0.4 * ((i * 7) % 10) / 10);
+    dummy.updateMatrix();
+    im.setMatrixAt(i, dummy.matrix);
+  }
+  im.frustumCulled = false;
+  scene.add(im);
+  window.__lodInfo = () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles });
+}
+
 
 // ---- geoms: todas las geometrias que usa el juego, en dos filas ----
 if (sceneId === 'geoms') {

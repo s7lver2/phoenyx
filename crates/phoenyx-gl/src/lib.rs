@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use wgpu::util::DeviceExt;
 
+mod gpu_cull;
+
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Floats por entrada de cada array de entrada (deben coincidir con shader.wgsl y con pack.ts).
 pub const GLOBALS_F: usize = 64;
@@ -267,6 +269,16 @@ impl Growable {
             mapped_at_creation: false,
         })
     }
+    /// Reserva al menos `bytes` (sin conservar el contenido); true si hubo que recrearlo.
+    fn ensure(&mut self, device: &wgpu::Device, bytes: u64) -> bool {
+        let need = bytes.max(16);
+        if need <= self.cap {
+            return false;
+        }
+        self.cap = need.next_power_of_two();
+        self.buf = Self::make(device, self.cap);
+        true
+    }
     /// Escribe y devuelve true si hubo que recrearlo.
     fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) -> bool {
         let need = (data.len() as u64).max(16);
@@ -324,6 +336,10 @@ pub struct Gl {
     draws: Growable,
     inst_mats: Growable,
     inst_cols: Growable,
+    /// culling y LOD en GPU de las mallas marcadas (si el adaptador lo permite: `gpu_ok`)
+    gcull: gpu_cull::GpuCull,
+    gpu_vis: Growable,
+    gpu_ok: bool,
     slots: HashMap<u32, Slot>,
     inst_next: u32,
     /// plazas de la reserva liberadas (offset, cap) que no eran las ultimas: se reutilizan con la misma capacidad
@@ -387,8 +403,12 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, alpha: bool) -> Result<G
         })
         .await
         .map_err(err)?;
-    let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
-    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor { required_features: features, ..Default::default() }).await.map_err(err)?;
+    // INDIRECT_FIRST_INSTANCE: los dibujos del culling en GPU llevan su primera instancia en los argumentos indirectos
+    let gpu_ok = adapter.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
+    let features = (adapter.features() & wgpu::Features::TIMESTAMP_QUERY) | if gpu_ok { wgpu::Features::INDIRECT_FIRST_INSTANCE } else { wgpu::Features::empty() };
+    let max = adapter.limits();
+    let limits = wgpu::Limits { max_storage_buffers_per_shader_stage: max.max_storage_buffers_per_shader_stage.min(10), ..Default::default() };
+    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor { required_features: features, required_limits: limits, ..Default::default() }).await.map_err(err)?;
     let status: Status = Default::default();
     let st_err = status.clone();
     device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| {
@@ -447,6 +467,7 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, alpha: bool) -> Result<G
                 ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             },
             st(9, ro, both),
+            st(15, ro, wgpu::ShaderStages::VERTEX),
             wgpu::BindGroupLayoutEntry {
                 binding: 11,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -654,6 +675,9 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, alpha: bool) -> Result<G
         draws: Growable::new(&device, 1024),
         inst_mats: Growable::new(&device, 4096),
         inst_cols: Growable::new(&device, 1024),
+        gcull: gpu_cull::GpuCull::new(&device),
+        gpu_vis: Growable::new(&device, 1024),
+        gpu_ok,
         slots: HashMap::new(),
         inst_next: 0,
         free: Vec::new(),
@@ -1118,6 +1142,11 @@ impl Gl {
         self.device.destroy();
     }
 
+    /// Si el adaptador permite el culling y LOD en GPU (INDIRECT_FIRST_INSTANCE).
+    pub fn gpu_ok(&self) -> bool {
+        self.gpu_ok
+    }
+
     pub fn is_lost(&self) -> bool {
         self.status.lock().unwrap().0
     }
@@ -1465,7 +1494,7 @@ impl Gl {
 
     /// Dibuja un fotograma. Los formatos de los arrays: ver docs/FASE1.md.
     /// `draws`: 12 u32 por dibujo `[geometria, objeto, material, flags, primer indice, n indices, clave de texturas, malla instanciada (u32::MAX si no), n instancias, primera instancia, 0, 0]`, ya en el orden final de pintado.
-    pub fn frame(&mut self, globals: &[f32], objects: &[f32], materials: &[f32], lights: &[f32], draws: &[u32], shadows: &[f32], shadow_passes: &[u32], main_draws: u32) -> bool {
+    pub fn frame(&mut self, globals: &[f32], objects: &[f32], materials: &[f32], lights: &[f32], draws: &[u32], shadows: &[f32], shadow_passes: &[u32], main_draws: u32, gpu_groups: &[f32]) -> bool {
         if globals.len() < GLOBALS_F {
             return false;
         }
@@ -1479,7 +1508,20 @@ impl Gl {
         grew |= self.shadows.write(&self.device, &self.queue, bytemuck::cast_slice(shadows));
         // la malla instanciada se resuelve a su plaza de la reserva; el indice de dibujo va en los 16 bits altos de la instancia
         let mut dr = draws.to_vec();
-        for c in dr.chunks_exact_mut(12) {
+        // culling y LOD en GPU: `gpu_groups` = [tolerancia px, 0, diametro minimo px, 0] y 16 floats por grupo
+        // [malla, objeto, n LOD, radio, cx, cy, cz, err0..err3, 0..]; los dibujos de LOD (bit 8192) llevan en c[10] = grupo * 4 + LOD
+        let ngr = if self.gpu_ok && gpu_groups.len() >= 4 { (gpu_groups.len() - 4) / 16 } else { 0 };
+        let mut ggs: Vec<gpu_cull::GroupGpu> = (0..ngr)
+            .map(|gi| {
+                let f = &gpu_groups[4 + gi * 16..4 + gi * 16 + 16];
+                let (off, n) = self.slots.get(&(f[0] as u32)).map_or((0, 0), |sl| (sl.offset, sl.n));
+                gpu_cull::GroupGpu { a: [off, n, f[1] as u32, 0], b: [f[3], f[4], f[5], f[6]], err: [f[7], f[8], f[9], f[10]], ..Default::default() }
+            })
+            .collect();
+        let mut gargs: Vec<u32> = Vec::new();
+        let mut vis_next = 0u32;
+        let mut gmax = 0u32;
+        for (i, c) in dr.chunks_exact_mut(12).enumerate() {
             // dibujo de usuario (ShaderMaterial): sin huesos; si es instanciado (c[7] = malla), solo se resuelve su plaza (c[9] lleva la mezcla)
             if c[3] & 1024 != 0 {
                 if c[7] != u32::MAX {
@@ -1497,6 +1539,13 @@ impl Gl {
             if c[11] != 0 {
                 c[11] = self.slots.get(&c[11]).map_or(0, |sl| sl.offset + 1);
             }
+            // dibujo de LOD del culling en GPU: sin grupo valido (o sin GPU) se descarta
+            let (gi, lod) = ((c[10] >> 2) as usize, (c[10] & 3) as usize);
+            let gpu = c[3] & 8192 != 0;
+            if gpu && (gi >= ngr || c[7] == u32::MAX) {
+                c[3] &= !8192;
+                c[8] = 0;
+            }
             if c[7] != u32::MAX {
                 match self.slots.get(&c[7]) {
                     Some(sl) => {
@@ -1506,9 +1555,30 @@ impl Gl {
                     None => c[8] = 0,
                 }
             }
+            if c[3] & 8192 != 0 {
+                let n = c[8];
+                let (first, cnt) = self.geoms.get(&c[0]).map_or((0, 0), |g| {
+                    let f = c[4].min(g.n);
+                    (f, c[5].min(g.n.saturating_sub(f)))
+                });
+                let slot = (gargs.len() / 5) as u32;
+                gargs.extend_from_slice(&[cnt, 0, first, 0, (i as u32) << 16]);
+                ggs[gi].vis[lod] = vis_next;
+                ggs[gi].slot[lod] = slot;
+                ggs[gi].a[3] = ggs[gi].a[3].max(lod as u32 + 1);
+                ggs[gi].a[1] = ggs[gi].a[1].min(n);
+                c[9] = vis_next;
+                c[10] = slot;
+                vis_next += n;
+                gmax = gmax.max(n);
+            }
         }
         let draws = &dr[..];
         grew |= self.draws.write(&self.device, &self.queue, bytemuck::cast_slice(draws));
+        if ngr > 0 {
+            grew |= self.gpu_vis.ensure(&self.device, vis_next as u64 * 4);
+            self.gcull.upload(&self.device, &self.queue, &ggs, &gargs, [gpu_groups[0], globals[61], gpu_groups[2], 0.0]);
+        }
         if grew || self.bg.is_none() {
             self.bg = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
@@ -1521,6 +1591,7 @@ impl Gl {
                     entry(4, &self.draws.buf),
                     entry(5, &self.inst_mats.buf),
                     entry(6, &self.inst_cols.buf),
+                    entry(15, &self.gpu_vis.buf),
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&self.ltc1) },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.ltc2) },
                     wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(&self.lm0) },
@@ -1543,6 +1614,7 @@ impl Gl {
                     entry(4, &self.draws.buf),
                     entry(5, &self.inst_mats.buf),
                     entry(6, &self.inst_cols.buf),
+                    entry(15, &self.gpu_vis.buf),
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&self.ltc1) },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.ltc2) },
                     wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(&self.lm0) },
@@ -1598,6 +1670,9 @@ impl Gl {
         let clear_color = (globals[48] as u32 & 1 != 0).then_some(self.clear).or(pend.color);
         let clear_depth = pend.depth || (globals[48] as u32 & 2 != 0);
         let mut enc = self.device.create_command_encoder(&Default::default());
+        if ngr > 0 {
+            self.gcull.encode(&self.device, &mut enc, &self.globals, &self.objects.buf, &self.inst_mats.buf, &self.gpu_vis.buf, ngr as u32, gmax);
+        }
         let mut tris = 0u64;
         // pasadas de sombras: [capa, primer dibujo, n dibujos, ancho, alto] por luz que se repinta
         for sp in shadow_passes.chunks_exact(5) {
@@ -1702,6 +1777,11 @@ impl Gl {
                 p.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
                 let (first, n) = (d[4].min(g.n), d[5].min(g.n.saturating_sub(d[4].min(g.n))));
                 let base = (i as u32) << 16;
+                if d[3] & 8192 != 0 {
+                    // culling y LOD en GPU: las instancias visibles las cuenta el compute en los argumentos indirectos
+                    p.draw_indexed_indirect(&self.gcull.args, d[10] as u64 * 20);
+                    continue;
+                }
                 p.draw_indexed(first..first + n, 0, base..base + d[8]);
                 tris += (n / 3) as u64 * d[8] as u64;
             }

@@ -56,6 +56,8 @@ struct Shadow {
 @group(0) @binding(4) var<storage, read> draws: array<vec4<u32>>;
 @group(0) @binding(5) var<storage, read> inst_mats: array<mat4x4<f32>>;
 @group(0) @binding(6) var<storage, read> inst_cols: array<vec4<f32>>;
+// culling y LOD en GPU (gpu_cull.wgsl): lista de instancias visibles por (grupo, LOD); solo la lee `vs`
+@group(0) @binding(15) var<storage, read> gpu_vis: array<u32>;
 
 @group(1) @binding(0) var tex_map: texture_2d<f32>;
 @group(1) @binding(1) var tex_normal: texture_2d<f32>;
@@ -136,8 +138,12 @@ fn skin_normal(bo: u32, si: vec4<u32>, sw: vec4<f32>, n: vec3<f32>) -> vec3<f32>
 fn vs(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec3<f32>, @location(4) si: vec4<u32>, @location(5) sw: vec4<f32>, @builtin(instance_index) ii: u32) -> VOut {
     // el indice de dibujo va en los 16 bits altos de instance_index y la instancia en los bajos
     let di = ii >> 16u;
-    let k = ii & 0xFFFFu;
+    var k = ii & 0xFFFFu;
     let d = draws[di * 3u];
+    if ((d.w & 8192u) != 0u) {
+        // dibujo de LOD del culling en GPU: la instancia real sale de la lista de visibles (base en la palabra 9)
+        k = gpu_vis[draws[di * 3u + 2u].y + k];
+    }
     let d1 = draws[di * 3u + 1u];
     let bo = draws[di * 3u + 2u].w;
     let o = objects[d.y];

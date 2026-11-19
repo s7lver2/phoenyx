@@ -40,6 +40,13 @@ export class WebGLRenderer {
   outputColorSpace = SRGBColorSpace;
   toneMapping = NoToneMapping;
   toneMappingExposure = 1;
+
+  /** culling y LOD en GPU de las InstancedMesh con `userData.gpuLods` (si el adaptador lo permite); false: todas por el camino normal */
+  gpuDriven = true;
+  /** tolerancia de error del LOD en pixeles proyectados */
+  gpuTolerance = 1;
+  /** diametro minimo en pixeles para dibujar una instancia del camino GPU (0: sin descarte por tamano) */
+  gpuMinPx = 0;
   autoClear = true;
   autoClearColor = true;
   autoClearDepth = true;
@@ -543,7 +550,7 @@ export class WebGLRenderer {
     this.gl.set_environment(envId ? envId : 0xffffffff);
     this.renderCount++;
     const p = this.packer.pack(scene, camera, { matricesDone: true, env: !!envId, exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, // con scene.background (Color) three limpia siempre, segun autoClearColor/autoClearDepth aunque autoClear sea false
- clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, size: rtOut ? [Math.max(1, Math.floor(this.rt.width)), Math.max(1, Math.floor(this.rt.height))] : [this.domElement.width, this.domElement.height], shadow: this.shadowMap }, (g, slots, lm) => this.geomId(g, slots, lm), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m), (m) => this.patchInfo(m));
+ clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, size: rtOut ? [Math.max(1, Math.floor(this.rt.width)), Math.max(1, Math.floor(this.rt.height))] : [this.domElement.width, this.domElement.height], shadow: this.shadowMap }, (g, slots, lm) => this.geomId(g, slots, lm), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m), (m) => this.patchInfo(m), this.gpuDriven && this.gl.gpu_ok() ? { tau: this.gpuTolerance, minPx: this.gpuMinPx } : null);
     // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
     if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {
       this.gl.set_ltc(UniformsLib.LTC_FLOAT_1.image.data, UniformsLib.LTC_FLOAT_2.image.data);
@@ -551,7 +558,7 @@ export class WebGLRenderer {
     }
     if (p.shadowAlloc) this.gl.set_shadow_maps(p.shadowAlloc[0], p.shadowAlloc[1]);
     // si el fotograma no llega a dibujarse (superficie perdida, cambio de tamano) los mapas quedan sin pintar: se repintan en el siguiente
-    if (this.gl.frame(p.globals, p.objects, p.materials, p.lights, p.draws, p.shadows, p.shadowPasses, p.nDraws)) {
+    if (this.gl.frame(p.globals, p.objects, p.materials, p.lights, p.draws, p.shadows, p.shadowPasses, p.nDraws, p.gpuGroups)) {
       if (p.shadowRan) this.shadowMap.needsUpdate = false;
     } else this.packer.forceShadows = true;
     const err = this.gl.take_error();

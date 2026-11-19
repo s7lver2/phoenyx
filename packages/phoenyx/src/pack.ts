@@ -45,6 +45,8 @@ export interface Packed {
   /** la pasada de sombras se ejecuto (three entonces baja shadowMap.needsUpdate) */
   shadowRan: boolean;
   triangles: number;
+  /** culling y LOD en GPU: [tolerancia px, 0, diametro minimo px, 0] y 16 floats por grupo (ver phoenyx-gl/src/lib.rs, `frame`); vacio sin grupos */
+  gpuGroups: Float32Array;
 }
 
 export interface FrameState {
@@ -107,7 +109,7 @@ export class Packer {
   forceShadows = false;
   private sSize = 0;
 
-  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any, slots?: any, lineMode?: number) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; points: boolean; attributes: any; values: number[]; texKey: number; b0: number; b1: number } | null, patchInfo: (material: any) => { id: number; extras: number[] } | null = () => null): Packed {
+  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any, slots?: any, lineMode?: number) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; points: boolean; attributes: any; values: number[]; texKey: number; b0: number; b1: number } | null, patchInfo: (material: any) => { id: number; extras: number[] } | null = () => null, gpu: { tau: number; minPx: number } | null = null): Packed {
     // las matrices ya las actualizo render() (runBeforeRender); repetirlo recorre y recompone todo el grafo otra vez
     if (!st.matricesDone) {
       if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
@@ -232,7 +234,9 @@ export class Packer {
     const objRec = new Map<any, number>();
     // estado del objeto en curso para `emit` (declarada una vez: crear dos closures por objeto cuesta en escenas de miles de objetos)
     let cUser: any = null, cIi: any = null, cO: any = null;
-    let cGid = 0, cMi = 0, cTk = 0, cBk = 0, cFirst = 0, cIdx = 0;
+    let cGid = 0, cMi = 0, cTk = 0, cBk = 0, cFirst = 0, cIdx = 0, cGpu = -1;
+    // grupos del culling en GPU (solo si hay adaptador que lo permita y no es la pasada de normales)
+    const gpuG: number[] = gpu && !ov ? [gpu.tau, 0, gpu.minPx, 0] : [];
     const bits = (common: number, flip: boolean, backSide: boolean, double: boolean, normalDouble: boolean) =>
       common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
     const emit = (fl: number) => {
@@ -250,7 +254,7 @@ export class Packer {
         // una malla con mas de 65535 instancias se parte en varios dibujos (instance_index lleva 16 bits de instancia)
         for (let s = 0; s < ii.count; s += 65535) {
           const n = Math.min(65535, ii.count - s);
-          draws.push(cGid, no, cMi, fl | (ii.color ? 128 : 0), cFirst, cIdx, cTk, ii.id, n, s, 0, 0);
+          draws.push(cGid, no, cMi, fl | (ii.color ? 128 : 0), cFirst, cIdx, cTk, ii.id, n, s, cGpu >= 0 ? cGpu : 0, 0);
           triangles += (cIdx / 3) * n;
         }
       }
@@ -304,7 +308,26 @@ export class Packer {
       // tira de lineas: el indice expandido son pares (sin drawRange)
       if (lineMode) (first = 0), (idx = Math.max(0, (lineMode === 2 ? dataCount : dataCount - 1) * 2));
       if (idx === 0) continue;
-      cUser = user; cIi = ii; cO = o; cGid = gid; cMi = mi; cTk = tk; cBk = bk; cFirst = first; cIdx = idx;
+      cUser = user; cIi = ii; cO = o; cGid = gid; cMi = mi; cTk = tk; cBk = bk; cFirst = first; cIdx = idx; cGpu = -1;
+      // malla instanciada con LOD (userData.gpuLods = geometrias de los LOD 1..3 con su error): un dibujo por LOD, el culling y la eleccion los hace el compute
+      const lods = gpuG.length && ii && !user && !m.transparent && ii.count <= 65535 ? o.userData.gpuLods : undefined;
+      if (lods && lods.length) {
+        const bs = it.geometry.boundingSphere ?? (it.geometry.computeBoundingSphere(), it.geometry.boundingSphere);
+        const nl = Math.min(4, lods.length + 1);
+        const gi = (gpuG.length - 4) / 16;
+        gpuG.push(ii.id, no, nl, bs.radius, bs.center.x, bs.center.y, bs.center.z, 0, lods[0]?.error ?? 0, lods[1]?.error ?? 0, lods[2]?.error ?? 0, 0, 0, 0, 0, 0);
+        for (let l = 0; l < nl; l++) {
+          const gg = l === 0 ? it.geometry : lods[l - 1].geometry;
+          cGid = geomId(gg, null, 0);
+          cFirst = 0;
+          cIdx = gg.index ? gg.index.count : gg.attributes.position.count;
+          cGpu = gi * 4 + l;
+          emit(bits(common | 8192, flip, m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide));
+        }
+        cGpu = -1;
+        no++;
+        continue;
+      }
       if (m.transparent && m.side === DoubleSide && !m.forceSinglePass && !o.isPoints) {
         // transparente de doble cara: primero las traseras (material BackSide), luego las frontales
         emit(bits(common, flip, true, false, false));
@@ -463,6 +486,7 @@ export class Packer {
       draws: new Uint32Array(draws),
       nDraws: mainDraws,
       triangles,
+      gpuGroups: new Float32Array(gpuG),
     };
   }
 
