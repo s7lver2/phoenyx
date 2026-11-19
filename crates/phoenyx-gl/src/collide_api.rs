@@ -24,8 +24,12 @@ impl Collide {
     pub fn add_cylinder(&mut self, chunk: u32, x: f32, y: f32, z: f32, r: f32, h: f32) {
         self.w.add_cylinder(chunk, [x, y, z], r, h);
     }
-    pub fn add_cells(&mut self, chunk: u32, ox: f32, oz: f32, cell: f32, w: u32, h: u32, bits: &[u8], y0: f32, y1: f32) {
-        self.w.add_cells(chunk, [ox, oz], cell, w, h, bits, y0, y1);
+    /// Devuelve el id del bloque (para `set_cell`).
+    pub fn add_cells(&mut self, chunk: u32, ox: f32, oz: f32, cell: f32, w: u32, h: u32, bits: &[u8], y0: f32, y1: f32) -> u32 {
+        self.w.add_cells(chunk, [ox, oz], cell, w, h, bits, y0, y1)
+    }
+    pub fn set_cell(&mut self, block: u32, x: u32, z: u32, solid: bool) {
+        self.w.set_cell(block, x, z, solid);
     }
     pub fn add_floor(&mut self, chunk: u32, x0: f32, z0: f32, x1: f32, z1: f32, y: f32) {
         self.w.add_floor(chunk, [x0, z0], [x1, z1], y);

@@ -54,7 +54,9 @@ export class CollisionWorld {
   addBoxY(chunk: number, c: [number, number, number], half: [number, number, number], yaw: number) { this.w.add_box_y(chunk, ...c, ...half, yaw); }
   addCylinder(chunk: number, x: number, y: number, z: number, r: number, h: number) { this.w.add_cylinder(chunk, x, y, z, r, h); }
   /** Celdas solidas del laberinto: `bits` por filas, 1 bit por celda (LSB primero). */
-  addCells(chunk: number, ox: number, oz: number, cell: number, w: number, h: number, bits: Uint8Array, y0: number, y1: number) { this.w.add_cells(chunk, ox, oz, cell, w, h, bits, y0, y1); }
+  addCells(chunk: number, ox: number, oz: number, cell: number, w: number, h: number, bits: Uint8Array, y0: number, y1: number): number { return this.w.add_cells(chunk, ox, oz, cell, w, h, bits, y0, y1); }
+  /** Cambia una celda de un bloque ya añadido (puertas, decorados, ascensor). */
+  setCell(block: number, x: number, z: number, solid: boolean) { this.w.set_cell(block, x, z, solid); }
   addFloor(chunk: number, x0: number, z0: number, x1: number, z1: number, y: number) { this.w.add_floor(chunk, x0, z0, x1, z1, y); }
   addRamp(chunk: number, x0: number, z0: number, x1: number, z1: number, ya: number, yb: number, axis: 0 | 1) { this.w.add_ramp(chunk, x0, z0, x1, z1, ya, yb, axis); }
   addSteps(chunk: number, x0: number, z0: number, x1: number, z1: number, y0: number, rise: number, tread: number, count: number, axis: 0 | 1, fromMax = false) { this.w.add_steps(chunk, x0, z0, x1, z1, y0, rise, tread, count, axis, fromMax); }

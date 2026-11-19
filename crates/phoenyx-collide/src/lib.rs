@@ -73,8 +73,23 @@ impl World {
 
     /// Celdas sólidas: `bits` va por filas (z) y columnas (x), 1 bit por celda, LSB primero. Ocupan de `y0` a `y1`.
     #[allow(clippy::too_many_arguments)]
-    pub fn add_cells(&mut self, chunk: u32, origin: [f32; 2], cell: f32, w: u32, h: u32, bits: &[u8], y0: f32, y1: f32) {
+    pub fn add_cells(&mut self, chunk: u32, origin: [f32; 2], cell: f32, w: u32, h: u32, bits: &[u8], y0: f32, y1: f32) -> u32 {
         self.cells.push(Cells { chunk, alive: true, origin, cell, w, h, bits: bits.to_vec(), y0, y1 });
+        (self.cells.len() - 1) as u32
+    }
+
+    /// Cambia una celda de un bloque (puertas que se abren y se cierran, decorados, el ascensor).
+    pub fn set_cell(&mut self, block: u32, x: u32, z: u32, solid: bool) {
+        if let Some(c) = self.cells.get_mut(block as usize) {
+            if x < c.w && z < c.h {
+                let bit = (z * c.w + x) as usize;
+                if solid {
+                    c.bits[bit >> 3] |= 1 << (bit & 7);
+                } else {
+                    c.bits[bit >> 3] &= !(1 << (bit & 7));
+                }
+            }
+        }
     }
 
     /// Quita todo lo de un trozo. La rejilla se reconstruye cuando lo muerto pasa de la mitad.
@@ -98,7 +113,6 @@ impl World {
 
     fn compact(&mut self) {
         self.cols.retain(|c| c.alive);
-        self.cells.retain(|c| c.alive);
         self.stamp.clear();
         self.stamp.resize(self.cols.len(), 0);
         self.dead = 0;
