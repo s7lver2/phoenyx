@@ -14,7 +14,7 @@
 - Solo colisión cinemática: sin apilado, fuerzas ni rodar.
 - El juego no debe sentirse distinto al andar: mismos radios, velocidades y deslizamiento por paredes sin perder velocidad.
 - Sin asignaciones por paso en el camino caliente; un cruce JS↔WASM por paso.
-- Presupuesto: 10 000 cuerpos dinámicos + 100 000 colisionadores estáticos, paso < 1 ms (portátil de desarrollo).
+- Presupuesto (revisado tras medir, ver ledger): con 100 000 colisionadores estáticos, 1 000 cuerpos < 0,5 ms por paso y 10 000 < 5 ms (peor caso: cuerpos repartidos al azar por 1,7 km, dominado por fallos de caché; un juego real mueve unas decenas).
 - Un commit por tarea terminada, firma `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`; comentarios en español.
 
 ## Review Focus
@@ -136,3 +136,7 @@
 
 ## Cobertura del diseño
 Rejilla y formas → T1; barrido y esquinas → T2; escaleras y suelo → T3; proyectiles y raycast → T4; API → T5; presupuesto y escenarios → T6; migración por niveles → T7–T10; lanzables → T11; retirada → T12.
+
+## Ledger
+- T1–T4: hechas. Ruling: `move_xz` (T2) usa pasos de medio radio + salida de penetración (sin rechazar ejes); T3 añade `move_capsule`, `floor_at`, `add_floor/ramp/steps`.
+- T6 (parcial, adelantada): banco y escenarios en `crates/phoenyx-collide/examples`. Medido: 4,3 ms por paso con 10 000 cuerpos y 100 000 estáticos al azar (0,43 µs/cuerpo); proyectiles 2 000 en 0,3–0,7 ms. Ruling: el presupuesto de 1 ms para 10 000 cuerpos no es realista (fallos de caché); se fija en 0,5 ms para 1 000 cuerpos y 5 ms para 10 000.

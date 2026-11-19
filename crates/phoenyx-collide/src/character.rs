@@ -93,7 +93,7 @@ impl World {
         // una sola consulta para todo el movimiento: el cuerpo, ensanchado por lo que va a recorrer
         let m = b.r + len + 0.05;
         let mut buf = std::mem::take(&mut self.scratch);
-        self.query_aabb([b.pos[0] - m, feet - 0.01, b.pos[2] - m], [b.pos[0] + m, top + 0.01, b.pos[2] + m], &mut buf);
+        self.query_aabb([b.pos[0] - m, feet - b.step_max - 0.01, b.pos[2] - m], [b.pos[0] + m, top + 0.01, b.pos[2] + m], &mut buf);
         let steps = ((len / (b.r * 0.5)).ceil() as u32).max(1);
         let (sx, sz) = (delta[0] / steps as f32, delta[1] / steps as f32);
         let mut flags = 0;

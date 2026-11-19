@@ -90,30 +90,45 @@ impl World {
         }
     }
 
-    /// El suelo más alto bajo (x, z) que no pasa de `feet + step_max` (parches de suelo y la cara superior de las cajas pisables).
-    pub fn floor_at(&mut self, x: f32, z: f32, feet: f32, step_max: f32) -> Option<f32> {
-        let lim = feet + step_max + 1e-4;
+    /// Suelo de los parches (rejilla propia) bajo (x, z) que no pasa de `lim`.
+    fn patch_floor(&self, x: f32, z: f32, lim: f32) -> Option<f32> {
         let mut best: Option<f32> = None;
-        {
-            let fl = &self.floors;
-            fl.grid.visit([x, z], [x, z], |id| {
-                if let Some(h) = fl.list[id as usize].height(x, z) {
-                    if h <= lim && best.is_none_or(|b| h > b) {
-                        best = Some(h);
-                    }
+        let fl = &self.floors;
+        fl.grid.visit([x, z], [x, z], |id| {
+            if let Some(h) = fl.list[id as usize].height(x, z) {
+                if h <= lim && best.is_none_or(|b| h > b) {
+                    best = Some(h);
                 }
-            });
-        }
-        let mut buf = std::mem::take(&mut self.scratch);
-        self.query_aabb([x, feet - 64.0, z], [x, lim, z], &mut buf);
-        for s in &buf {
+            }
+        });
+        best
+    }
+
+    fn box_floor(shapes: &[crate::Shape], x: f32, z: f32, lim: f32, mut best: Option<f32>) -> Option<f32> {
+        for s in shapes {
             let (lo, hi) = s.aabb();
             if hi[1] <= lim && lo[0] <= x && hi[0] >= x && lo[2] <= z && hi[2] >= z && best.is_none_or(|b| hi[1] > b) {
                 best = Some(hi[1]);
             }
         }
+        best
+    }
+
+    /// El suelo más alto bajo (x, z) que no pasa de `feet + step_max` (parches de suelo y la cara superior de las cajas pisables).
+    pub fn floor_at(&mut self, x: f32, z: f32, feet: f32, step_max: f32) -> Option<f32> {
+        let lim = feet + step_max + 1e-4;
+        let best = self.patch_floor(x, z, lim);
+        let mut buf = std::mem::take(&mut self.scratch);
+        self.query_aabb([x, feet - 64.0, z], [x, lim, z], &mut buf);
+        let best = Self::box_floor(&buf, x, z, lim, best);
         self.scratch = buf;
         best
+    }
+
+    /// Como `floor_at`, pero las cajas salen de la última consulta de `move_xz` (ya hecha para este mismo cuerpo): sin otra búsqueda.
+    pub(crate) fn floor_near(&self, x: f32, z: f32, feet: f32, step_max: f32) -> Option<f32> {
+        let lim = feet + step_max + 1e-4;
+        Self::box_floor(&self.scratch, x, z, lim, self.patch_floor(x, z, lim))
     }
 
     /// Un paso completo de personaje: XZ con contactos, subida de peldaño, pegado al suelo al bajar y gravedad/aterrizaje.
@@ -124,7 +139,7 @@ impl World {
         let (x, z) = (b.pos[0], b.pos[2]);
         if b.ground && b.vel_y <= 0.0 {
             // en el suelo: seguirlo (subir peldaños, bajar escaleras) mientras la diferencia quepa en un paso
-            match self.floor_at(x, z, feet0, b.step_max) {
+            match self.floor_near(x, z, feet0, b.step_max) {
                 Some(h) if h >= feet0 - b.step_max => {
                     if h > feet0 + 1e-3 {
                         flags |= STEPPED;
