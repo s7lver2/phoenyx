@@ -1,9 +1,11 @@
 // Colision cinematica de Phoenyx: rejilla hash, formas simples, movimiento de personaje, suelo/escaleras, proyectiles y raycast.
 // Sin asignaciones en el camino caliente: los buffers de trabajo viven en `World` y se reutilizan.
+pub mod character;
 pub mod grid;
 pub mod shapes;
 
 use grid::Grid;
+pub use character::{Body, GROUNDED, HIT_WALL, STEPPED};
 pub use shapes::{Shape, V3};
 
 /// Un bloque de celdas sólidas (1 bit por celda) del laberinto de un nivel.
@@ -32,13 +34,14 @@ pub struct World {
     stamp: Vec<u32>,
     epoch: u32,
     dead: usize,
+    scratch: Vec<Shape>,
 }
 
 pub type ColId = u32;
 
 impl World {
     pub fn new(cell: f32) -> World {
-        World { grid: Grid::new(cell), cols: Vec::new(), cells: Vec::new(), stamp: Vec::new(), epoch: 0, dead: 0 }
+        World { grid: Grid::new(cell), cols: Vec::new(), cells: Vec::new(), stamp: Vec::new(), epoch: 0, dead: 0, scratch: Vec::new() }
     }
 
     fn add(&mut self, chunk: u32, shape: Shape) -> ColId {
