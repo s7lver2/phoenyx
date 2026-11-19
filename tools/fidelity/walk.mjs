@@ -6,7 +6,7 @@ const ctx = await b.newContext({ viewport: { width: 800, height: 450 } });
 await ctx.addInitScript(() => localStorage.setItem('br-welcome', '1'));
 const p = await ctx.newPage();
 p.on('pageerror', (e) => console.log('pageerror', String(e)));
-await p.goto(`http://localhost:5192/?capture&seed=${process.argv[3] || 1}&god${mode === 'old' ? '&collide=old' : ''}`);
+await p.goto(`http://localhost:5192/?capture${process.env.Q ? "&" + process.env.Q : ""}&seed=${process.argv[3] || 1}&god${mode === 'old' ? '&collide=old' : ''}`);
 for (let i = 0; i < 100 && !(await p.evaluate(() => !!window.__capture?.ready)); i++) {
   const play = p.locator('button', { hasText: /^\s*PLAY\s*$/ }).first();
   if (await play.isVisible().catch(() => false)) await play.click().catch(() => {});

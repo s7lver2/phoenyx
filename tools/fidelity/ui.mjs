@@ -3,7 +3,7 @@ const b = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrom
 const page = await (await b.newContext({ viewport: { width: 1280, height: 720 } })).newPage();
 page.on('console', (m) => ['error','warning'].includes(m.type()) && console.log('[c]', m.type(), m.text().slice(0, 200)));
 page.on('pageerror', (e) => console.log('[pageerror]', String(e).slice(0, 300)));
-await page.goto('http://localhost:5192/');
+await page.goto('http://localhost:5193/');
 await page.waitForTimeout(15000);
 console.log((await page.innerText('body')).slice(0, 600));
 await page.screenshot({ path: '/tmp/ui1.png' });

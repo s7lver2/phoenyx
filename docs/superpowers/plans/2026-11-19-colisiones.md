@@ -140,3 +140,7 @@ Rejilla y formas → T1; barrido y esquinas → T2; escaleras y suelo → T3; pr
 ## Ledger
 - T1–T4: hechas. Ruling: `move_xz` (T2) usa pasos de medio radio + salida de penetración (sin rechazar ejes); T3 añade `move_capsule`, `floor_at`, `add_floor/ramp/steps`.
 - T6 (parcial, adelantada): banco y escenarios en `crates/phoenyx-collide/examples`. Medido: 4,3 ms por paso con 10 000 cuerpos y 100 000 estáticos al azar (0,43 µs/cuerpo); proyectiles 2 000 en 0,3–0,7 ms. Ruling: el presupuesto de 1 ms para 10 000 cuerpos no es realista (fallos de caché); se fija en 0,5 ms para 1 000 cuerpos y 5 ms para 10 000.
+- T5: hecha (puente WASM `Collide`, `CollisionWorld`/`Body`/`Projectiles` en `packages/phoenyx/src/collide.ts`; alias `@phoenyx/collide` en el juego).
+- T7: hecha para Level 0 y Suites (celdas, mobiliario, puertas por `set_cell`); `?collide=old` conserva lo de antes. Medido con `tools/fidelity/walk.mjs` (paseo aleatorio con el jugador real): Level 0 404 m vs 420 m (iguales); Suites 316 m vs 226 m y 37% menos pasos parados.
+- T9 (parcial): Ruling: Poolrooms conserva su `canMove` (reglas propias de capas, agua, tubos, toboganes); `move()` ahora avanza en pasos de 12 cm con la altura de los pies de cada paso y alterna el eje de prueba. `tools/fidelity/pool-stairs.mjs` no reproduce el fallo (old y new igual: sube bien); sin una posición del dueño no se puede dar por arreglado.
+- Pendiente: T8 (escaleras de Suites por `add_steps`), T10 (hospital/parking), T11 (lanzables), T12 (retirada de lo antiguo).
