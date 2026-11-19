@@ -3,3 +3,4 @@
 export * from './three-exports';
 export { WebGLRenderer } from './renderer';
 import './post-shaders';
+export { CollisionWorld, Body as CollideBody, Projectiles, HIT_WALL, GROUNDED, STEPPED } from './collide';

@@ -13,3 +13,4 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
 bytemuck = { version = "1", features = ["derive"] }
 console_error_panic_hook = "0.1"
+phoenyx-collide = { path = "../phoenyx-collide" }

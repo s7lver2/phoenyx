@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use wgpu::util::DeviceExt;
 
+mod collide_api;
 mod gpu_cull;
 
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
