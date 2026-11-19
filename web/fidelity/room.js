@@ -626,6 +626,35 @@ if (sceneId === 'sh-dust-world') scene.add(makeWorldDust(THREE, { t: 13.9 }));
 if (sceneId === 'sh-world-shaft') scene.add(makeWorldShafts(THREE));
 if (sceneId === 'sh-world-sky') scene.add(makeWorldSky(THREE, { t: 9 }));
 
+// ---- escena 'sh-points': PointsMaterial con sus variantes del juego (tamano en mundo con atenuacion, mapa con alphaTest, color por vertice, aditivo, sin atenuacion) ----
+if (sceneId === 'sh-points') {
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const cloud = (n, cx, cy, cz, r, colors) => {
+    const p = new Float32Array(n * 3), c = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      p.set([cx + (rnd() - 0.5) * r, cy + (rnd() - 0.5) * r, cz + (rnd() - 0.5) * r], i * 3);
+      if (colors) c.set([rnd(), rnd(), rnd()], i * 3);
+    }
+    const g = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(p, 3));
+    if (colors) g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+    return g;
+  };
+  const dot = canvasTex((g, n) => {
+    const gr = g.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.5)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.clearRect(0, 0, n, n); g.fillStyle = gr; g.fillRect(0, 0, n, n);
+  }, 64);
+  // 1: color plano (entity.ts), 2: aditivo sin tonemap (explosion.ts), 3: mapa + alphaTest (runlevel.ts), 4: color por vertice, 5: sin atenuacion (game.ts), 6: mapa aditivo con opacidad (waitKit.ts)
+  const mk = (geo, mat, y) => { const o = new THREE.Points(geo, mat); o.position.y = y; o.frustumCulled = false; scene.add(o); };
+  mk(cloud(40, -3.2, 1.2, -2, 2), new THREE.PointsMaterial({ color: 0x9fd8ff, size: 0.12, transparent: true, opacity: 0.85, depthWrite: false }), 0);
+  mk(cloud(40, 0, 1.2, -2, 2), new THREE.PointsMaterial({ color: 0xffb040, size: 0.18, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }), 0);
+  mk(cloud(40, 3.2, 1.2, -2, 2), new THREE.PointsMaterial({ color: 0xff3010, size: 0.3, map: dot, transparent: true, alphaTest: 0.2, depthWrite: false }), 0);
+  mk(cloud(60, -3.2, 1.2, 1, 2, true), new THREE.PointsMaterial({ size: 0.15, vertexColors: true }), 0);
+  mk(cloud(40, 0, 1.2, 1, 2), new THREE.PointsMaterial({ color: 0xffffff, size: 12, sizeAttenuation: false, depthTest: false, toneMapped: false }), 0);
+  mk(cloud(60, 3.2, 1.2, 1, 2), new THREE.PointsMaterial({ color: 0xffe8b0, size: 0.35, map: dot, transparent: true, opacity: 0.6, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }), 0);
+}
+
 // ---- escenas de parches de material (`onBeforeCompile`): cada una con el cuerpo del parche del juego ----
 if (sceneId === 'sh-cosmetics') {
   // el traje (textura amarilla con detalles oscuros) con el tinte del juego: luminosidad de la textura pintada de azul, mezcla parcial

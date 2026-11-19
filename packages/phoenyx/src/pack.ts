@@ -216,7 +216,8 @@ export class Packer {
       const gp = it.geometry.attributes.position;
       if (!gp || gp.count === 0) continue;
       // ShaderMaterial del juego: dibujo de usuario (WGSL portado, ver user-shaders/); sin version portada se avisa y se omite
-      const user = m.isShaderMaterial && !ov ? userInfo(m) : null;
+      if (ov && o.isPoints) continue; // los puntos no entran en la pasada de normales
+      const user = (m.isShaderMaterial || m.isPointsMaterial) && !ov ? userInfo(m) : null;
       if (m.isShaderMaterial && !ov && !user) { warnOnce('shader-' + (m.name || m.uuid), 'ShaderMaterial sin version WGSL registrada: no se dibuja'); continue; }
       if (!user && !m.color && !m.isMeshNormalMaterial) { warnOnce(m.type, `${m.type} aun no esta soportado y se omite`); continue; }
       this.mv.multiplyMatrices(camera.matrixWorldInverse, o.matrixWorld);
@@ -457,7 +458,7 @@ export class Packer {
       else if (object.isLOD) {
         if (object.autoUpdate === true) object.update(camera);
       } else if (object.isLight) this.lights.push(object);
-      else if (object.isMesh || (object.isPoints && object.material.isShaderMaterial)) {
+      else if (object.isMesh || object.isPoints) {
         if (object.isSkinnedMesh && (!object.skeleton || !object.geometry.attributes.skinIndex)) warnOnce('skin-sin-datos', 'SkinnedMesh sin skeleton o sin skinIndex/skinWeight: se dibuja como Mesh');
         if (!object.frustumCulled || this.frustum.intersectsObject(object)) {
           // z de ordenacion: centro de la esfera envolvente, como WebGLRenderer.projectObject

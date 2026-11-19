@@ -23,7 +23,33 @@ export function registerUserShader(vertexShader: string, fragmentShader: string,
   registry.set(vertexShader + '\u0000' + fragmentShader, def);
 }
 
-export function userShaderOf(material: any): UserShaderDef | undefined {
+/** Contexto del renderer que necesitan los materiales integrados (tamano de punto en pixeles). */
+export interface BuiltinCtx { pixelRatio: number; height: number }
+
+/** PointsMaterial de three (points_vert/points_frag): shader integrado id 20 (user/points_basic.wgsl). */
+function pointsDef(ctx: BuiltinCtx): UserShaderDef {
+  return {
+    id: 20,
+    points: true,
+    textures: (m) => [m.map],
+    pack: (m) => {
+      const map = m.map;
+      if (map && map.matrixAutoUpdate === true) map.updateMatrix();
+      const e = map ? map.matrix.elements : [1, 0, 0, 0, 1, 0, 0, 0, 1];
+      const opaque = m.transparent === false && m.blending === 1 && !m.alphaToCoverage;
+      return [
+        m.size * ctx.pixelRatio, ctx.height * 0.5, m.sizeAttenuation ? 1 : 0, m.toneMapped ? 1 : 0,
+        m.color.r, m.color.g, m.color.b, m.opacity,
+        e[0], e[1], e[3], e[4],
+        e[6], e[7], map && map.image ? 1 : 0, m.alphaTest > 0 ? m.alphaTest : 0,
+        m.vertexColors ? 1 : 0, opaque ? 1 : 0, 0, 0,
+      ];
+    },
+  };
+}
+
+export function userShaderOf(material: any, ctx?: BuiltinCtx): UserShaderDef | undefined {
+  if (material.isPointsMaterial) return ctx ? pointsDef(ctx) : undefined;
   return registry.get(material.vertexShader + '\u0000' + material.fragmentShader);
 }
 
