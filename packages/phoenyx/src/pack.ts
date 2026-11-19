@@ -230,6 +230,31 @@ export class Packer {
     let triangles = 0;
     let no = 0;
     const objRec = new Map<any, number>();
+    // estado del objeto en curso para `emit` (declarada una vez: crear dos closures por objeto cuesta en escenas de miles de objetos)
+    let cUser: any = null, cIi: any = null, cO: any = null;
+    let cGid = 0, cMi = 0, cTk = 0, cBk = 0, cFirst = 0, cIdx = 0;
+    const bits = (common: number, flip: boolean, backSide: boolean, double: boolean, normalDouble: boolean) =>
+      common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
+    const emit = (fl: number) => {
+      const user = cUser, ii = cIi, o = cO;
+      if (user) {
+        // bit 1024: dibujo de usuario (bit 2048: Points); la mezcla va empaquetada en las palabras 9 y 11 y el id del shader en la 10
+        // una malla instanciada con ShaderMaterial lleva su malla y su numero de instancias (palabras 7 y 8); la matriz la lee el WGSL con instMat
+        const n = ii ? Math.min(65535, ii.count) : 1;
+        draws.push(cGid, no, cMi, fl | 1024 | (o.isPoints ? 2048 : 0) | (o.isLine ? 4096 : 0), cFirst, cIdx, cTk, ii ? ii.id : 0xffffffff, n, user.b0, user.id, user.b1);
+        if (!o.isPoints && !o.isLine) triangles += (cIdx / 3) * n;
+      } else if (!ii) {
+        draws.push(cGid, no, cMi, fl, cFirst, cIdx, cTk, 0xffffffff, 1, 0, 0, cBk);
+        triangles += cIdx / 3;
+      } else {
+        // una malla con mas de 65535 instancias se parte en varios dibujos (instance_index lleva 16 bits de instancia)
+        for (let s = 0; s < ii.count; s += 65535) {
+          const n = Math.min(65535, ii.count - s);
+          draws.push(cGid, no, cMi, fl | (ii.color ? 128 : 0), cFirst, cIdx, cTk, ii.id, n, s, 0, 0);
+          triangles += (cIdx / 3) * n;
+        }
+      }
+    };
     for (const it of list) {
       const o = it.object, m = ov ?? it.material;
       // como renderBufferDirect: sin posicion no se dibuja; materiales sin color (Shader, Depth...) aun no se soportan
@@ -278,33 +303,13 @@ export class Packer {
       // tira de lineas: el indice expandido son pares (sin drawRange)
       if (lineMode) (first = 0), (idx = Math.max(0, (lineMode === 2 ? dataCount : dataCount - 1) * 2));
       if (idx === 0) continue;
-      const bits = (backSide: boolean, double: boolean, normalDouble: boolean) =>
-        common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
-      const emit = (fl: number) => {
-        if (user) {
-          // bit 1024: dibujo de usuario (bit 2048: Points); la mezcla va empaquetada en las palabras 9 y 11 y el id del shader en la 10
-          // una malla instanciada con ShaderMaterial lleva su malla y su numero de instancias (palabras 7 y 8); la matriz la lee el WGSL con instMat
-          const n = ii ? Math.min(65535, ii.count) : 1;
-          draws.push(gid, no, mi, fl | 1024 | (o.isPoints ? 2048 : 0) | (o.isLine ? 4096 : 0), first, idx, tk, ii ? ii.id : 0xffffffff, n, user.b0, user.id, user.b1);
-          if (!o.isPoints && !o.isLine) triangles += (idx / 3) * n;
-        } else if (!ii) {
-          draws.push(gid, no, mi, fl, first, idx, tk, 0xffffffff, 1, 0, 0, bk);
-          triangles += idx / 3;
-        } else {
-          // una malla con mas de 65535 instancias se parte en varios dibujos (instance_index lleva 16 bits de instancia)
-          for (let s = 0; s < ii.count; s += 65535) {
-            const n = Math.min(65535, ii.count - s);
-            draws.push(gid, no, mi, fl | (ii.color ? 128 : 0), first, idx, tk, ii.id, n, s, 0, 0);
-            triangles += (idx / 3) * n;
-          }
-        }
-      };
+      cUser = user; cIi = ii; cO = o; cGid = gid; cMi = mi; cTk = tk; cBk = bk; cFirst = first; cIdx = idx;
       if (m.transparent && m.side === DoubleSide && !m.forceSinglePass && !o.isPoints) {
         // transparente de doble cara: primero las traseras (material BackSide), luego las frontales
-        emit(bits(true, false, false));
-        emit(bits(false, false, false));
+        emit(bits(common, flip, true, false, false));
+        emit(bits(common, flip, false, false, false));
       } else {
-        emit(bits(m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide));
+        emit(bits(common, flip, m.side === BackSide, m.side === DoubleSide, m.side === DoubleSide));
       }
       no++;
     }
