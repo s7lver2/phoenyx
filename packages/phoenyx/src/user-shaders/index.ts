@@ -12,6 +12,8 @@ export interface UserShaderDef {
   textures?(m: any): any[];
   /** el shader dibuja `Points`: un cuadrado por vertice (user/_points.wgsl) */
   points?: boolean;
+  /** el shader dibuja `Line`/`LineSegments`/`LineLoop` (line-list) */
+  lines?: boolean;
   /** atributos de la geometria que van a cada hueco del vertice (normal 3, uv 2, color 3 floats): nombres en orden, cada uno aporta sus componentes */
   attributes?: { normal?: string[]; uv?: string[]; color?: string[] };
 }
@@ -68,8 +70,16 @@ const spriteDef: UserShaderDef = {
   },
 };
 
+/** LineBasicMaterial de three: shader integrado id 22 (user/line_basic.wgsl), dibujado como line-list. */
+const lineDef: UserShaderDef = {
+  id: 22,
+  lines: true,
+  pack: (m) => [m.toneMapped ? 1 : 0, m.vertexColors ? 1 : 0, m.transparent === false && m.blending === 1 && !m.alphaToCoverage ? 1 : 0, 0, m.color.r, m.color.g, m.color.b, m.opacity],
+};
+
 export function userShaderOf(material: any, ctx?: BuiltinCtx): UserShaderDef | undefined {
   if (material.isSpriteMaterial) return spriteDef;
+  if (material.isLineBasicMaterial) return lineDef;
   if (material.isPointsMaterial) return ctx ? pointsDef(ctx) : undefined;
   return registry.get(material.vertexShader + '\u0000' + material.fragmentShader);
 }

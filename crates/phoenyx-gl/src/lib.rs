@@ -201,6 +201,8 @@ fn user_src(id: u32) -> Option<(String, bool)> {
         20 => (include_str!("user/points_basic.wgsl").to_string(), true),
         // SpriteMaterial de three (integrado)
         21 => (include_str!("user/sprite_basic.wgsl").to_string(), false),
+        // LineBasicMaterial de three (integrado)
+        22 => (include_str!("user/line_basic.wgsl").to_string(), false),
         _ => return None,
     })
 }
@@ -1033,7 +1035,7 @@ impl Gl {
 
     /// Pipeline de un dibujo de usuario: `flags` como los del material estandar, `b0`/`b1` = mezcla empaquetada (ver pack.ts).
     fn ensure_user_pipeline(&mut self, shader: u32, flags: u32, fmt: u32, b0: u32, b1: u32) {
-        let flags = flags & (31 | 2048);
+        let flags = flags & (31 | 2048 | 4096);
         let key = (shader, flags, fmt, b0, b1);
         if self.user_pls.contains_key(&key) {
             return;
@@ -1045,7 +1047,8 @@ impl Gl {
             self.user_modules.insert(shader, m);
         }
         let module = &self.user_modules[&shader];
-        let cull = if flags & 1 != 0 || points { None } else { Some(wgpu::Face::Back) };
+        let lines = flags & 4096 != 0;
+        let cull = if flags & 1 != 0 || points || lines { None } else { Some(wgpu::Face::Back) };
         let cw = (flags & 2 != 0) != (fmt != 0);
         let front = if cw { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw };
         // mezcla: b0 = srcRGB | dstRGB << 8 | ecuacion << 16 | modo << 24; b1 = srcA | dstA << 8 | ecuacionA << 16
@@ -1077,7 +1080,7 @@ impl Gl {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState { format: target_format(fmt, self.cfg.format), blend, write_mask: wgpu::ColorWrites::ALL })],
             }),
-            primitive: wgpu::PrimitiveState { cull_mode: cull, front_face: front, ..Default::default() },
+            primitive: wgpu::PrimitiveState { topology: if lines { wgpu::PrimitiveTopology::LineList } else { wgpu::PrimitiveTopology::TriangleList }, cull_mode: cull, front_face: front, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH,
                 depth_write_enabled: Some(flags & 8 != 0),
@@ -1470,7 +1473,7 @@ impl Gl {
                 }
                 if d[3] & 1024 != 0 {
                     // dibujo de usuario: sin pipeline (shader no registrado) no se pinta
-                    let Some(up) = self.user_pls.get(&(d[10], d[3] & (31 | 2048), tfmt, d[9], d[11])) else { continue };
+                    let Some(up) = self.user_pls.get(&(d[10], d[3] & (31 | 2048 | 4096), tfmt, d[9], d[11])) else { continue };
                     p.set_pipeline(up);
                     if d[6] != last_key {
                         p.set_bind_group(1, &self.bgs[&d[6]], &[]);

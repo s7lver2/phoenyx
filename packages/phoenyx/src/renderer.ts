@@ -233,6 +233,7 @@ export class WebGLRenderer {
     return {
       id: def.id,
       points: !!def.points,
+      lines: !!def.lines,
       attributes: def.attributes ?? null,
       values: [m.fog ? 1 : 0, 0, 0, 0, ...def.pack(m)],
       texKey: this.textures.listKey(def.textures ? def.textures(m) : []),
@@ -251,7 +252,7 @@ export class WebGLRenderer {
   }
 
   /** Sube la geometria a la GPU si es nueva o cambio (version de sus atributos) y devuelve su id. */
-  private geomId(g: any, slots?: { normal?: string[]; uv?: string[]; color?: string[] } | null): number {
+  private geomId(g: any, slots?: { normal?: string[]; uv?: string[]; color?: string[] } | null, lineMode = 0): number {
     const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv, col = g.attributes.color;
     const aid = (a: any) => {
       if (!a) return 0;
@@ -260,7 +261,7 @@ export class WebGLRenderer {
       return `${i}.${(a.data ?? a).version}.${a.count}`;
     };
     const slotKey = slots ? ['normal', 'uv', 'color'].map((k) => (slots[k] ?? []).map((n) => aid(g.attributes[n])).join('+')).join('/') : '';
-    const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(col)}:${aid(g.index)}:${aid(g.attributes.skinIndex)}:${aid(g.attributes.skinWeight)}:${slotKey}`;
+    const key = `${aid(pos)}:${aid(nor)}:${aid(uv)}:${aid(col)}:${aid(g.index)}:${aid(g.attributes.skinIndex)}:${aid(g.attributes.skinWeight)}:${slotKey}:L${lineMode}`;
     let rec = this.ids.get(g);
     if (rec && rec.key === key) return rec.id;
     const f32 = (a: any, n: number) => {
@@ -275,7 +276,12 @@ export class WebGLRenderer {
       return out;
     };
     let index: Uint32Array;
-    if (g.index) index = g.index.array instanceof Uint32Array ? g.index.array : Uint32Array.from(g.index.array);
+    if (lineMode) {
+      // Line (tira) y LineLoop: la tira se expande a pares de la lista de lineas
+      const n = g.index ? g.index.count : pos.count, at = (i: number) => (g.index ? g.index.array[i] : i), segs = Math.max(0, lineMode === 2 ? n : n - 1);
+      index = new Uint32Array(segs * 2);
+      for (let i = 0; i < segs; i++) (index[i * 2] = at(i)), (index[i * 2 + 1] = at((i + 1) % n));
+    } else if (g.index) index = g.index.array instanceof Uint32Array ? g.index.array : Uint32Array.from(g.index.array);
     else index = Uint32Array.from({ length: pos.count }, (_, i) => i);
     if (!rec) {
       const r = { id: this.nextId++, key };
@@ -380,7 +386,7 @@ export class WebGLRenderer {
     if (!rtOut && this.toneMapping !== NoToneMapping && this.toneMapping !== ACESFilmicToneMapping) console.warn('[phoenyx] solo esta soportado ACESFilmicToneMapping');
     this.renderCount++;
     const p = this.packer.pack(scene, camera, { exposure: this.toneMappingExposure, toneMapping: tm, clear: [rgb.r, rgb.g, rgb.b, alpha], outputColorSpace: space, linear: rtOut, // con scene.background (Color) three limpia siempre, segun autoClearColor/autoClearDepth aunque autoClear sea false
- clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, size: rtOut ? [Math.max(1, Math.floor(this.rt.width)), Math.max(1, Math.floor(this.rt.height))] : [this.domElement.width, this.domElement.height], shadow: this.shadowMap }, (g, slots) => this.geomId(g, slots), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m), (m) => this.patchInfo(m));
+ clearFlags: forceClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : this.autoClear ? (this.autoClearColor ? 1 : 0) | (this.autoClearDepth ? 2 : 0) : 0, size: rtOut ? [Math.max(1, Math.floor(this.rt.width)), Math.max(1, Math.floor(this.rt.height))] : [this.domElement.width, this.domElement.height], shadow: this.shadowMap }, (g, slots, lm) => this.geomId(g, slots, lm), (m) => this.textures.materialKey(m), (o) => this.instInfo(o), (o) => this.boneInfo(o), (m) => this.userInfo(m), (m) => this.patchInfo(m));
     // tablas LTC de RectAreaLight: las deja RectAreaLightUniformsLib.init() en UniformsLib
     if (!this.ltcDone && UniformsLib.LTC_FLOAT_1) {
       this.gl.set_ltc(UniformsLib.LTC_FLOAT_1.image.data, UniformsLib.LTC_FLOAT_2.image.data);

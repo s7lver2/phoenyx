@@ -677,6 +677,30 @@ if (sceneId === 'sh-sprite') {
   sp(new THREE.SpriteMaterial({ map: tag, alphaTest: 0.5, color: 0xffffff }), 2.6, 0.6, 1.5, 1);
 }
 
+// ---- escena 'sh-line': LineBasicMaterial (segmentos con niebla y opacidad, tira con color por vertice, rayos X sin prueba de profundidad, lazo) ----
+if (sceneId === 'sh-line') {
+  const pts = (arr) => new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+  // grietas del parking: segmentos sueltos con niebla
+  const cr = [];
+  for (let i = 0; i < 24; i++) { const x = -5 + i * 0.4, z = -4 + (i % 5) * 0.7; cr.push(x, 0.01, z, x + 0.5, 0.01, z + 0.3 * ((i % 3) - 1)); }
+  scene.add(new THREE.LineSegments(pts(cr), new THREE.LineBasicMaterial({ color: 0x4f554b, transparent: true, opacity: 0.8, fog: true })));
+  // goteo: lineas verticales con opacidad
+  const dr = [];
+  for (let i = 0; i < 20; i++) dr.push(-2 + i * 0.2, 2.8, -1 + (i % 4) * 0.3, -2 + i * 0.2, 2.2 - (i % 3) * 0.2, -1 + (i % 4) * 0.3);
+  scene.add(new THREE.LineSegments(pts(dr), new THREE.LineBasicMaterial({ color: 0x7b958a, transparent: true, opacity: 0.6, depthWrite: false, fog: true })));
+  // tira (Line) con color por vertice
+  const lg = pts([-3, 0.4, 1, -2, 1.4, 1.5, -1, 0.6, 1, 0, 1.6, 1.4, 1, 0.5, 1.2]);
+  lg.setAttribute('color', new THREE.Float32BufferAttribute([1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1], 3));
+  scene.add(new THREE.Line(lg, new THREE.LineBasicMaterial({ vertexColors: true })));
+  // lazo (LineLoop)
+  const loop = pts([2, 0.5, 1, 3, 0.5, 1, 3, 1.5, 1, 2, 1.5, 1]);
+  scene.add(new THREE.LineLoop(loop, new THREE.LineBasicMaterial({ color: 0x40ff80, toneMapped: false })));
+  // aristas "rayos X" detras de una caja: sin prueba de profundidad, con renderOrder
+  const bx = box(1.2, 1.2, 1.2, mMetal, 0, 0.6, -3.5);
+  const xr = new THREE.LineSegments(new THREE.EdgesGeometry(bx.geometry), new THREE.LineBasicMaterial({ color: 0xff2525, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }));
+  xr.position.copy(bx.position); xr.renderOrder = 5; scene.add(xr);
+}
+
 // ---- escenas de parches de material (`onBeforeCompile`): cada una con el cuerpo del parche del juego ----
 if (sceneId === 'sh-cosmetics') {
   // el traje (textura amarilla con detalles oscuros) con el tinte del juego: luminosidad de la textura pintada de azul, mezcla parcial

@@ -103,7 +103,7 @@ export class Packer {
   forceShadows = false;
   private sSize = 0;
 
-  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any, slots?: any) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; points: boolean; attributes: any; values: number[]; texKey: number; b0: number; b1: number } | null, patchInfo: (material: any) => { id: number; extras: number[] } | null = () => null): Packed {
+  pack(scene: any, camera: any, st: FrameState, geomId: (geometry: any, slots?: any, lineMode?: number) => number, texKey: (material: any) => number, instInfo: (object: any) => { id: number; count: number; color: boolean } | null, boneInfo: (object: any) => number, userInfo: (material: any) => { id: number; points: boolean; attributes: any; values: number[]; texKey: number; b0: number; b1: number } | null, patchInfo: (material: any) => { id: number; extras: number[] } | null = () => null): Packed {
     if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
     if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
     this.projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -216,8 +216,8 @@ export class Packer {
       const gp = it.geometry.attributes.position;
       if (!gp || gp.count === 0) continue;
       // ShaderMaterial del juego: dibujo de usuario (WGSL portado, ver user-shaders/); sin version portada se avisa y se omite
-      if (ov && o.isPoints) continue; // los puntos no entran en la pasada de normales
-      const user = (m.isShaderMaterial || m.isPointsMaterial || m.isSpriteMaterial) && !ov ? userInfo(m) : null;
+      if (ov && (o.isPoints || o.isLine)) continue; // los puntos no entran en la pasada de normales
+      const user = (m.isShaderMaterial || m.isPointsMaterial || m.isSpriteMaterial || m.isLineBasicMaterial) && !ov ? userInfo(m) : null;
       if (m.isShaderMaterial && !ov && !user) { warnOnce('shader-' + (m.name || m.uuid), 'ShaderMaterial sin version WGSL registrada: no se dibuja'); continue; }
       if (!user && !m.color && !m.isMeshNormalMaterial) { warnOnce(m.type, `${m.type} aun no esta soportado y se omite`); continue; }
       this.mv.multiplyMatrices(camera.matrixWorldInverse, o.matrixWorld);
@@ -228,7 +228,8 @@ export class Packer {
       const n = this.nm.elements;
       objs.set([n[0], n[1], n[2], 0, n[3], n[4], n[5], 0, n[6], n[7], n[8], 0], base + 16);
       if (o.isSprite) objs.set([o.center.x, o.center.y], base + 28); // `center` del Sprite para sprite_basic.wgsl
-      const gid = geomId(it.geometry, user ? user.attributes : null);
+      const lineMode = o.isLine && !o.isLineSegments ? (o.isLineLoop ? 2 : 1) : 0;
+      const gid = geomId(it.geometry, user ? user.attributes : null, lineMode);
       const tk = user ? user.texKey : texKey(m);
       let mi: number;
       if (user) {
@@ -249,8 +250,10 @@ export class Packer {
       const geo = it.geometry;
       const dataCount = geo.index ? geo.index.count : geo.attributes.position.count;
       const gs = it.group ? it.group.start : 0, gc = it.group ? it.group.count : Infinity;
-      const first = Math.max(geo.drawRange.start, gs);
-      const idx = Math.max(0, Math.min(dataCount, geo.drawRange.start + geo.drawRange.count, gs + gc) - first);
+      let first = Math.max(geo.drawRange.start, gs);
+      let idx = Math.max(0, Math.min(dataCount, geo.drawRange.start + geo.drawRange.count, gs + gc) - first);
+      // tira de lineas: el indice expandido son pares (sin drawRange)
+      if (lineMode) (first = 0), (idx = Math.max(0, (lineMode === 2 ? dataCount : dataCount - 1) * 2));
       if (idx === 0) continue;
       const bits = (backSide: boolean, double: boolean, normalDouble: boolean) =>
         common | (double ? 1 : 0) | (backSide !== flip ? 2 : 0) | (backSide ? 32 : 0) | (normalDouble ? 64 : 0);
@@ -259,8 +262,8 @@ export class Packer {
           // bit 1024: dibujo de usuario (bit 2048: Points); la mezcla va empaquetada en las palabras 9 y 11 y el id del shader en la 10
           // una malla instanciada con ShaderMaterial lleva su malla y su numero de instancias (palabras 7 y 8); la matriz la lee el WGSL con instMat
           const n = ii ? Math.min(65535, ii.count) : 1;
-          draws.push(gid, no, mi, fl | 1024 | (o.isPoints ? 2048 : 0), first, idx, tk, ii ? ii.id : 0xffffffff, n, user.b0, user.id, user.b1);
-          if (!o.isPoints) triangles += (idx / 3) * n;
+          draws.push(gid, no, mi, fl | 1024 | (o.isPoints ? 2048 : 0) | (o.isLine ? 4096 : 0), first, idx, tk, ii ? ii.id : 0xffffffff, n, user.b0, user.id, user.b1);
+          if (!o.isPoints && !o.isLine) triangles += (idx / 3) * n;
         } else if (!ii) {
           draws.push(gid, no, mi, fl, first, idx, tk, 0xffffffff, 1, 0, 0, bk);
           triangles += idx / 3;
@@ -459,7 +462,7 @@ export class Packer {
       else if (object.isLOD) {
         if (object.autoUpdate === true) object.update(camera);
       } else if (object.isLight) this.lights.push(object);
-      else if (object.isMesh || object.isPoints) {
+      else if (object.isMesh || object.isPoints || object.isLine) {
         if (object.isSkinnedMesh && (!object.skeleton || !object.geometry.attributes.skinIndex)) warnOnce('skin-sin-datos', 'SkinnedMesh sin skeleton o sin skinIndex/skinWeight: se dibuja como Mesh');
         if (!object.frustumCulled || this.frustum.intersectsObject(object)) {
           // z de ordenacion: centro de la esfera envolvente, como WebGLRenderer.projectObject
@@ -492,7 +495,7 @@ export class Packer {
             (mat.transparent ? this.transparent : this.opaque).push(item);
           }
         }
-      } else if (object.isLine) warnOnce(object.type, `${object.type} aun no esta soportado y se omite`);
+      }
     }
     for (const c of object.children) this.project(c, camera, groupOrder);
   }
