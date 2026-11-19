@@ -54,5 +54,6 @@
   { "id": "sh-concrete", "query": "renderer=@R&scene=sh-concrete&fog=exp", "advance": 2, "nota": "parking.ts: rugosidad minima del hormigon" },
   { "id": "sh-pooltile", "query": "renderer=@R&scene=sh-pooltile&fog=exp", "advance": 2, "nota": "poolmap.ts poolTile: variacion por mundo, sol solo en suelos y rugosidad en paredes" },
   { "id": "sh-pooltile-np", "query": "renderer=@R&scene=sh-pooltile&np=1&fog=exp", "advance": 2, "nota": "baldosa sin parche: MeshPhysicalMaterial pelado (diagnostico)" },
-  { "id": "sh-points", "query": "renderer=@R&scene=sh-points&fog=exp", "advance": 2, "nota": "PointsMaterial: color, aditivo, mapa con alphaTest, color por vertice, sin atenuacion" }
+  { "id": "sh-points", "query": "renderer=@R&scene=sh-points&fog=exp", "advance": 2, "nota": "PointsMaterial: color, aditivo, mapa con alphaTest, color por vertice, sin atenuacion" },
+  { "id": "sh-sprite", "query": "renderer=@R&scene=sh-sprite&fog=exp", "advance": 2, "nota": "SpriteMaterial: halo aditivo, humo, etiqueta rotada, sin atenuacion, centro y alphaTest" }
 ]

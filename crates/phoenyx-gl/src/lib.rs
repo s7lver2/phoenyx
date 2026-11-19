@@ -199,6 +199,8 @@ fn user_src(id: u32) -> Option<(String, bool)> {
         10 => (include_str!("user/world_sky.wgsl").to_string(), false),
         // PointsMaterial de three (integrado)
         20 => (include_str!("user/points_basic.wgsl").to_string(), true),
+        // SpriteMaterial de three (integrado)
+        21 => (include_str!("user/sprite_basic.wgsl").to_string(), false),
         _ => return None,
     })
 }

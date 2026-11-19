@@ -217,7 +217,7 @@ export class Packer {
       if (!gp || gp.count === 0) continue;
       // ShaderMaterial del juego: dibujo de usuario (WGSL portado, ver user-shaders/); sin version portada se avisa y se omite
       if (ov && o.isPoints) continue; // los puntos no entran en la pasada de normales
-      const user = (m.isShaderMaterial || m.isPointsMaterial) && !ov ? userInfo(m) : null;
+      const user = (m.isShaderMaterial || m.isPointsMaterial || m.isSpriteMaterial) && !ov ? userInfo(m) : null;
       if (m.isShaderMaterial && !ov && !user) { warnOnce('shader-' + (m.name || m.uuid), 'ShaderMaterial sin version WGSL registrada: no se dibuja'); continue; }
       if (!user && !m.color && !m.isMeshNormalMaterial) { warnOnce(m.type, `${m.type} aun no esta soportado y se omite`); continue; }
       this.mv.multiplyMatrices(camera.matrixWorldInverse, o.matrixWorld);
@@ -227,6 +227,7 @@ export class Packer {
       objs.set(o.matrixWorld.elements, base);
       const n = this.nm.elements;
       objs.set([n[0], n[1], n[2], 0, n[3], n[4], n[5], 0, n[6], n[7], n[8], 0], base + 16);
+      if (o.isSprite) objs.set([o.center.x, o.center.y], base + 28); // `center` del Sprite para sprite_basic.wgsl
       const gid = geomId(it.geometry, user ? user.attributes : null);
       const tk = user ? user.texKey : texKey(m);
       let mi: number;
@@ -242,7 +243,7 @@ export class Packer {
       // malla con piel: su tramo de huesos (0 = sin piel; sin skinIndex/skinWeight se dibuja como Mesh)
       const bk = o.isSkinnedMesh && it.geometry.attributes.skinIndex && it.geometry.attributes.skinWeight ? boneInfo(o) : 0;
       // como three (state.setMaterial): se descarta siempre la cara trasera; BackSide y el determinante negativo invierten el giro
-      const flip = o.matrixWorld.determinant() < 0;
+      const flip = !o.isSprite && o.matrixWorld.determinant() < 0; // como renderBufferDirect: el giro solo se invierte en Mesh (y en Sprite no)
       const common = (o.receiveShadow ? 256 : 0) | (m.transparent ? 4 : 0) | (m.depthWrite !== false && m.depthTest !== false ? 8 : 0) | (m.depthTest !== false ? 16 : 0);
       // rango de dibujo: drawRange y grupo, como WebGLRenderer.renderBufferDirect
       const geo = it.geometry;
@@ -481,7 +482,17 @@ export class Packer {
             for (const group of geo.groups) push(object.material[group.materialIndex], group);
           } else push(object.material, null);
         }
-      } else if (object.isPoints || object.isLine || object.isSprite) warnOnce(object.type, `${object.type} aun no esta soportado y se omite`);
+      } else if (object.isSprite) {
+        // projectObject: frustum de sprite y z de la posicion del mundo proyectada
+        if (!object.frustumCulled || this.frustum.intersectsSprite(object)) {
+          this.v.setFromMatrixPosition(object.matrixWorld).applyMatrix4(this.projScreen);
+          const mat = object.material;
+          if (mat && mat.visible !== false) {
+            const item: Item = { object, geometry: object.geometry, material: mat, groupOrder, renderOrder: object.renderOrder, z: this.v.z, id: object.id, group: null };
+            (mat.transparent ? this.transparent : this.opaque).push(item);
+          }
+        }
+      } else if (object.isLine) warnOnce(object.type, `${object.type} aun no esta soportado y se omite`);
     }
     for (const c of object.children) this.project(c, camera, groupOrder);
   }

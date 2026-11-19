@@ -655,6 +655,28 @@ if (sceneId === 'sh-points') {
   mk(cloud(60, 3.2, 1.2, 1, 2), new THREE.PointsMaterial({ color: 0xffe8b0, size: 0.35, map: dot, transparent: true, opacity: 0.6, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }), 0);
 }
 
+// ---- escena 'sh-sprite': SpriteMaterial (halo aditivo sin niebla, humo con opacidad, etiqueta con textura y rotacion, sin atenuacion, centro desplazado) ----
+if (sceneId === 'sh-sprite') {
+  const glow = canvasTex((g, n) => {
+    const gr = g.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.4, 'rgba(255,255,255,0.4)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.clearRect(0, 0, n, n); g.fillStyle = gr; g.fillRect(0, 0, n, n);
+  }, 64);
+  const tag = canvasTex((g, n) => {
+    g.clearRect(0, 0, n, n); g.fillStyle = '#20a0e0'; g.fillRect(8, 40, n - 16, n - 80);
+    g.fillStyle = '#fff'; g.fillRect(20, 60, 90, 20); g.fillStyle = '#e04030'; g.fillRect(20, 100, 40, 30);
+  }, 128);
+  const sp = (mat, x, y, z, sx, sy) => { const s = new THREE.Sprite(mat); s.position.set(x, y, z); s.scale.set(sx, sy ?? sx, 1); scene.add(s); return s; };
+  sp(new THREE.SpriteMaterial({ map: glow, color: 0xffe8b0, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }), -3, 1.6, -2, 1.6, 2.4);
+  sp(new THREE.SpriteMaterial({ map: glow, color: 0xbfbfbf, transparent: true, depthWrite: false, opacity: 0.7 }), -1.2, 1.4, -1, 2.2);
+  sp(new THREE.SpriteMaterial({ map: glow, color: 0xff4020, transparent: true, depthWrite: false, opacity: 0.6 }), -0.7, 1.3, -1.5, 1.6);
+  sp(new THREE.SpriteMaterial({ map: tag, transparent: true, rotation: 0.5, depthWrite: false }), 1.2, 1.5, -2, 1.6);
+  sp(new THREE.SpriteMaterial({ map: tag, transparent: true, depthWrite: false, sizeAttenuation: false }), 3, 1.5, -4, 0.3);
+  const c = sp(new THREE.SpriteMaterial({ color: 0x40ff80, transparent: false }), 0, 0.5, 0.5, 0.6);
+  c.center.set(0, 0);
+  sp(new THREE.SpriteMaterial({ map: tag, alphaTest: 0.5, color: 0xffffff }), 2.6, 0.6, 1.5, 1);
+}
+
 // ---- escenas de parches de material (`onBeforeCompile`): cada una con el cuerpo del parche del juego ----
 if (sceneId === 'sh-cosmetics') {
   // el traje (textura amarilla con detalles oscuros) con el tinte del juego: luminosidad de la textura pintada de azul, mezcla parcial

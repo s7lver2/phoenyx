@@ -48,7 +48,28 @@ function pointsDef(ctx: BuiltinCtx): UserShaderDef {
   };
 }
 
+/** SpriteMaterial de three (sprite_vert/sprite_frag): shader integrado id 21 (user/sprite_basic.wgsl). */
+const spriteDef: UserShaderDef = {
+  id: 21,
+  // el quad de Sprite no trae normales (y su position es de 2 componentes): el hueco normal va a cero
+  attributes: { normal: [] },
+  textures: (m) => [m.map],
+  pack: (m) => {
+    const map = m.map;
+    if (map && map.matrixAutoUpdate === true) map.updateMatrix();
+    const e = map ? map.matrix.elements : [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const opaque = m.transparent === false && m.blending === 1 && !m.alphaToCoverage;
+    return [
+      m.rotation, m.sizeAttenuation ? 1 : 0, m.toneMapped ? 1 : 0, map && map.image ? 1 : 0,
+      m.color.r, m.color.g, m.color.b, m.opacity,
+      e[0], e[1], e[3], e[4],
+      e[6], e[7], m.alphaTest > 0 ? m.alphaTest : 0, opaque ? 1 : 0,
+    ];
+  },
+};
+
 export function userShaderOf(material: any, ctx?: BuiltinCtx): UserShaderDef | undefined {
+  if (material.isSpriteMaterial) return spriteDef;
   if (material.isPointsMaterial) return ctx ? pointsDef(ctx) : undefined;
   return registry.get(material.vertexShader + '\u0000' + material.fragmentShader);
 }
