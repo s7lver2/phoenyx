@@ -27,6 +27,7 @@ import { LM, lightmapped, makeLightmap, cosTint, poolTile, concrete, parkingDust
 import { FilmShader, VhsShader } from './games/vhsPass.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 
 const q = new URLSearchParams(location.search);
 const sceneId = q.get('scene') ?? 'exp';
@@ -360,6 +361,33 @@ if (sceneId === 'modelos' || sceneId === 'interior' || sceneId === 'piscina-sol'
     root.rotation.y = 0.5 + i * 0.3;
     scene.add(root);
   }));
+}
+
+// ---- escena 'ktx': GLB del juego en rejilla; con ?ktx=<carpeta> se leen los GLB convertidos a KTX2 (ver docs/KTX2.md) ----
+if (sceneId === 'ktx') {
+  const base = q.get('ktx') ? `/${q.get('ktx')}/` : '/models/';
+  const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+  // el transcodificador wasm se sirve junto al harness (dist/basis/); detectSupport lee las extensiones del renderer ya iniciado
+  const ktx2 = new KTX2Loader().setTranscoderPath('dist/basis/');
+  if (q.get('ktx')) {
+    // ?nocomp=1 finge una GPU sin texturas comprimidas: KTX2Loader transcodifica a RGBA8
+    modelsDone = renderer.ready.then(() => { if (q.get('nocomp') && renderer.extensions) renderer.extensions.has = () => false; ktx2.detectSupport(renderer); loader.setKTX2Loader(ktx2); });
+  }
+  scene.add(new THREE.HemisphereLight(0xfff2d0, 0x403018, 1.2));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+  sun.position.set(3, 6, 4);
+  scene.add(sun);
+  const names = ['armchair', 'cabinet', 'chair', 'chair2', 'crt', 'desk', 'door', 'duct', 'elevator', 'exit', 'flashlight', 'lamp', 'radar', 'shelf', 'socket', 'totem', 'vent', 'vhs', 'water', 'balloon', 'camcorder', 'gun'];
+  modelsDone = modelsDone.then(() => Promise.all(names.map(async (n, i) => {
+    const gltf = await loader.loadAsync(`${base}backrooms/${n}.glb`);
+    const root = gltf.scene;
+    const box = new THREE.Box3().setFromObject(root);
+    root.scale.setScalar(1.3 / Math.max(...box.getSize(new THREE.Vector3()).toArray()));
+    box.setFromObject(root);
+    const c = box.getCenter(new THREE.Vector3());
+    root.position.set((i % 6) * 1.7 - 4.25 - c.x, 0.7 - c.y + Math.floor(i / 6) * 0, -Math.floor(i / 6) * 1.7 + 1 - c.z);
+    scene.add(root);
+  })));
 }
 
 // ---- sombras: linterna (SpotLight) y sol (DirectionalLight) con PCFSoftShadowMap como el juego ----
@@ -1025,7 +1053,7 @@ window.__capture = {
   },
   info() {
     const i = renderer.info;
-    return { drawCalls: i.render.calls, triangles: i.render.triangles, geometries: i.memory.geometries, textures: i.memory.textures };
+    return { drawCalls: i.render.calls, triangles: i.render.triangles, geometries: i.memory.geometries, textures: i.memory.textures, textureBytes: i.memory.textureBytes ?? 0 };
   },
   release() {
     renderer.info.autoReset = true;

@@ -17,6 +17,7 @@ Motor de render para juegos en la web, en Rust + WebGPU (`wgpu`) compilado a WAS
 | [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) | Crates, culling y LOD en GPU |
 | [docs/LUX.md](docs/LUX.md) | La librería de iluminación |
 | [docs/ASSETS.md](docs/ASSETS.md) | Bake de modelos y LOD |
+| [docs/KTX2.md](docs/KTX2.md) | Texturas comprimidas KTX2/Basis: convertir y cargar |
 | [docs/FIDELIDAD.md](docs/FIDELIDAD.md) | El banco de fidelidad |
 | [docs/RENDIMIENTO.md](docs/RENDIMIENTO.md) | Mediciones |
 | [docs/IA.md](docs/IA.md) | `phoenix-ai` |

@@ -44,3 +44,6 @@ Dos pasadas con three de la misma escena (nivel 0 y Poolrooms comprobadas tras f
 
 ## Repetir en otro equipo
 Mismo comando en un equipo más potente y en uno más modesto: `sh baseline.sh <url>` genera la línea base completa (calidades `high`, `medium` y `low`, con CPU normal y frenada 4x) en `fidelity/baseline/`. El objetivo de rendimiento de la fase 8 se fija con esas cifras.
+
+## KTX2
+`tools/fidelity/ktx.mjs` mide VRAM, descarga y captura de la escena `ktx` con texturas normales o KTX2 (ver [KTX2.md](KTX2.md)).
