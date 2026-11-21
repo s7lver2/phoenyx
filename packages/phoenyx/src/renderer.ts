@@ -56,7 +56,7 @@ export class WebGLRenderer {
   info = {
     autoReset: true,
     render: { calls: 0, triangles: 0, frame: 0 },
-    memory: { geometries: 0, textures: 0 },
+    memory: { geometries: 0, textures: 0, /** VRAM de texturas subidas (bytes, mipmaps incluidos) */ textureBytes: 0 },
     reset() {
       this.render.calls = 0;
       this.render.triangles = 0;
@@ -89,7 +89,22 @@ export class WebGLRenderer {
   /** WebGLRenderer.capabilities: lo que consulta el juego (anisotropia) y lo basico que lee three */
   capabilities = { isWebGL2: true, maxTextureSize: 8192, maxAnisotropy: 16, precision: 'highp', getMaxAnisotropy: () => 16, getMaxPrecision: () => 'highp' };
   /** WebGLRenderer.extensions: no hay extensiones de WebGL; solo se anuncia la compilacion en paralelo (la GPU compila al primer dibujo) */
-  extensions = { has: (name: string) => name === 'KHR_parallel_shader_compile', get: (_name: string) => null, init() {} };
+  extensions = {
+    // KHR_parallel_shader_compile siempre; las de texturas comprimidas, segun el dispositivo (KTX2Loader.detectSupport las lee tras `await renderer.ready`)
+    has: (name: string) => {
+      const c = this.gl?.compressed_support() ?? 0;
+      switch (name) {
+        case 'KHR_parallel_shader_compile': return true;
+        case 'WEBGL_compressed_texture_s3tc':
+        case 'EXT_texture_compression_bptc': return !!(c & 1);
+        case 'WEBGL_compressed_texture_etc': return !!(c & 2);
+        case 'WEBGL_compressed_texture_astc': return !!(c & 4);
+        default: return false;
+      }
+    },
+    get: (_name: string) => null,
+    init() {},
+  };
   private loopId = 0;
   private loopFn: ((time: number, frame?: any) => void) | null = null;
   /** resguardos de la parte de WebGLRenderer que toca el Reflector: sin XR; el estado de GL lo lleva phoenyx-gl */
@@ -567,6 +582,7 @@ export class WebGLRenderer {
     this.info.render.triangles += p.triangles;
     this.info.render.frame++;
     this.info.memory.textures = this.textures.count;
+    this.info.memory.textureBytes = this.gl.texture_bytes();
     if (this.renderCount % 256 === 0) this.sweepBones();
   }
 

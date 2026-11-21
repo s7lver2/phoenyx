@@ -257,6 +257,14 @@ export class Gl {
         wasm.gl_clear(this.__wbg_ptr, r, g, b, a, color, depth);
     }
     /**
+     * Formatos comprimidos que admite el dispositivo: bit 0 BC (S3TC y BPTC), bit 1 ETC2, bit 2 ASTC.
+     * @returns {number}
+     */
+    compressed_support() {
+        const ret = wasm.gl_compressed_support(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * Crea (o reemplaza) un render target. `color_id` es su id de textura (para leerlo como `map` o entrada de un pase);
      * `depth_id` != 0 registra tambien su profundidad como textura legible. `fmt`: 1 RGBA16F, 2 RGBA8.
      * @param {number} color_id
@@ -581,6 +589,35 @@ export class Gl {
         wasm.gl_set_target(this.__wbg_ptr, id);
     }
     /**
+     * Sube una textura ya comprimida (BC, ETC2 o ASTC 4x4, `fmt` es la constante de formato de three) con todos sus mipmaps incluidos.
+     * `dims` lleva (ancho, alto) de cada nivel y `data` los niveles seguidos, del mayor al menor. Devuelve false si el dispositivo no
+     * admite el formato o los datos no cuadran: el llamador debe entonces transcodificar a RGBA8.
+     * @param {number} id
+     * @param {number} fmt
+     * @param {Uint32Array | number[]} dims
+     * @param {Uint8Array | number[]} data
+     * @param {boolean} srgb
+     * @returns {boolean}
+     */
+    set_texture_compressed(id, fmt, dims, data, srgb) {
+        const val3 = +id;
+        const val4 = +fmt;
+        const val5 = +srgb;
+        let ptr0, len0, ptr1, len1;
+        try {
+            ptr0 = passArray32ToWasm0(dims, wasm.__wbindgen_malloc);
+            len0 = WASM_VECTOR_LEN;
+            ptr1 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+            len1 = WASM_VECTOR_LEN;
+        } catch (e) {
+            if (ptr1) { wasm.__wbindgen_free(ptr1, len1 * 1, 1); }
+            if (ptr0) { wasm.__wbindgen_free(ptr0, len0 * 4, 4); }
+            throw e;
+        }
+        const ret = wasm.gl_set_texture_compressed(this.__wbg_ptr, val3, val4, ptr0, len0, ptr1, len1, val5);
+        return ret !== 0;
+    }
+    /**
      * Sube una textura RGBA de 8 bits (filas ya en el orden de `flipY`) y calcula sus mipmaps si `mips`.
      * @param {number} id
      * @param {number} w
@@ -638,6 +675,14 @@ export class Gl {
         } finally {
             wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
         }
+    }
+    /**
+     * VRAM aproximada de las texturas subidas con `set_texture` y `set_texture_compressed` (bytes, mipmaps incluidos).
+     * @returns {number}
+     */
+    texture_bytes() {
+        const ret = wasm.gl_texture_bytes(this.__wbg_ptr);
+        return ret;
     }
     /**
      * `[tipo, ms, tipo, ms, ...]` de la ultima lectura: 1 sombras, 2 escena, 100 + id de pase de pantalla completa (sumados por tipo).
@@ -1809,33 +1854,33 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, getArrayU8FromWasm0(arg2, arg3), arg4, arg5);
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 116, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 117, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h14d3297b61464c3f);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 49, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 50, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDeviceLostInfo")], shim_idx: 47, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDeviceLostInfo")], shim_idx: 48, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 47, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783_49);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 48, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783_52);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 49, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_50);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 50, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_53);
             return ret;
         },
         __wbindgen_generic_0000000000000006: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 49, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_51);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 50, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_54);
             return ret;
         },
         __wbindgen_generic_0000000000000007: function(arg0) {
@@ -1872,8 +1917,8 @@ function wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783(arg0, arg
     wasm.wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783_49(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783_49(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783_52(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783_52(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__h14d3297b61464c3f(arg0, arg1, arg2) {
@@ -1890,15 +1935,15 @@ function wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15(arg0, arg
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_50(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_50(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_53(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_53(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_51(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_51(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_54(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_54(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }

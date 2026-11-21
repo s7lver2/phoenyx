@@ -170,6 +170,28 @@ struct Pending {
 }
 
 /// Formato de color segun el codigo de destino: 0 pantalla, 1 RGBA16F, 2 RGBA8.
+/// Formato wgpu de una constante de formato de three: (formato, caracteristica necesaria -bit de `compressed`, 0 ninguna-,
+/// lado del bloque, bytes por bloque). RGBA8 sin comprimir (`RGBAFormat`) es un bloque de 1x1.
+fn compressed_format(three: u32, srgb: bool) -> Option<(wgpu::TextureFormat, u32, u32, u32)> {
+    use wgpu::TextureFormat as F;
+    let pick = |lin: F, s: F| if srgb { s } else { lin };
+    Some(match three {
+        1023 => (pick(F::Rgba8Unorm, F::Rgba8UnormSrgb), 0, 1, 4),
+        // S3TC: RGB_S3TC_DXT1, RGBA_S3TC_DXT1, DXT3, DXT5
+        33776 | 33777 => (pick(F::Bc1RgbaUnorm, F::Bc1RgbaUnormSrgb), 1, 4, 8),
+        33778 => (pick(F::Bc2RgbaUnorm, F::Bc2RgbaUnormSrgb), 1, 4, 16),
+        33779 => (pick(F::Bc3RgbaUnorm, F::Bc3RgbaUnormSrgb), 1, 4, 16),
+        // RGBA_BPTC_Format (BC7)
+        36492 => (pick(F::Bc7RgbaUnorm, F::Bc7RgbaUnormSrgb), 1, 4, 16),
+        // RGB_ETC1 (subconjunto de ETC2 RGB), RGB_ETC2, RGBA_ETC2_EAC
+        36196 | 37492 => (pick(F::Etc2Rgb8Unorm, F::Etc2Rgb8UnormSrgb), 2, 4, 8),
+        37496 => (pick(F::Etc2Rgba8Unorm, F::Etc2Rgba8UnormSrgb), 2, 4, 16),
+        // RGBA_ASTC_4x4_Format
+        37808 => (F::Astc { block: wgpu::AstcBlock::B4x4, channel: if srgb { wgpu::AstcChannel::UnormSrgb } else { wgpu::AstcChannel::Unorm } }, 4, 4, 16),
+        _ => return None,
+    })
+}
+
 fn target_format(fmt: u32, screen: wgpu::TextureFormat) -> wgpu::TextureFormat {
     match fmt {
         1 => wgpu::TextureFormat::Rgba16Float,
@@ -307,6 +329,10 @@ pub struct Gl {
     bgl: wgpu::BindGroupLayout,
     tex_bgl: wgpu::BindGroupLayout,
     textures: HashMap<u32, wgpu::TextureView>,
+    /// bytes de VRAM de cada textura de `textures` (con sus mipmaps), para `texture_bytes()`
+    tex_bytes: HashMap<u32, u64>,
+    /// caracteristicas de compresion que tiene el dispositivo (bit 0 BC, 1 ETC2, 2 ASTC)
+    compressed: u32,
     samplers: HashMap<u32, wgpu::Sampler>,
     bg_desc: HashMap<u32, ([u32; 5], [u32; 5])>,
     bgs: HashMap<u32, wgpu::BindGroup>,
@@ -406,7 +432,9 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, alpha: bool) -> Result<G
         .map_err(err)?;
     // INDIRECT_FIRST_INSTANCE: los dibujos del culling en GPU llevan su primera instancia en los argumentos indirectos
     let gpu_ok = adapter.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
-    let features = (adapter.features() & wgpu::Features::TIMESTAMP_QUERY) | if gpu_ok { wgpu::Features::INDIRECT_FIRST_INSTANCE } else { wgpu::Features::empty() };
+    // texturas comprimidas (KTX2/Basis): BC en escritorio, ETC2 y ASTC en moviles y algunos integrados; se piden las que ofrezca el adaptador
+    let tex_feats = adapter.features() & (wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::TEXTURE_COMPRESSION_ETC2 | wgpu::Features::TEXTURE_COMPRESSION_ASTC);
+    let features = (adapter.features() & wgpu::Features::TIMESTAMP_QUERY) | tex_feats | if gpu_ok { wgpu::Features::INDIRECT_FIRST_INSTANCE } else { wgpu::Features::empty() };
     let max = adapter.limits();
     let limits = wgpu::Limits { max_storage_buffers_per_shader_stage: max.max_storage_buffers_per_shader_stage.min(10), ..Default::default() };
     let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor { required_features: features, required_limits: limits, ..Default::default() }).await.map_err(err)?;
@@ -642,6 +670,8 @@ pub async fn create(canvas: web_sys::HtmlCanvasElement, alpha: bool) -> Result<G
     Ok(Gl {
         tex_bgl,
         textures: HashMap::new(),
+        tex_bytes: HashMap::new(),
+        compressed: (features.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) as u32) | ((features.contains(wgpu::Features::TEXTURE_COMPRESSION_ETC2) as u32) << 1) | ((features.contains(wgpu::Features::TEXTURE_COMPRESSION_ASTC) as u32) << 2),
         samplers: HashMap::new(),
         bg_desc: HashMap::new(),
         bgs: HashMap::new(),
@@ -982,8 +1012,70 @@ impl Gl {
                 ch = nh;
             }
         }
+        // bytes de VRAM: la cadena de mipmaps RGBA8 (cada nivel un cuarto del anterior)
+        let bytes: u64 = (0..levels).map(|l| ((w >> l).max(1) as u64) * ((h >> l).max(1) as u64) * 4).sum();
+        self.tex_bytes.insert(id, bytes);
         self.textures.insert(id, tex.create_view(&Default::default()));
         self.bgs.clear();
+    }
+
+    /// Sube una textura ya comprimida (BC, ETC2 o ASTC 4x4, `fmt` es la constante de formato de three) con todos sus mipmaps incluidos.
+    /// `dims` lleva (ancho, alto) de cada nivel y `data` los niveles seguidos, del mayor al menor. Devuelve false si el dispositivo no
+    /// admite el formato o los datos no cuadran: el llamador debe entonces transcodificar a RGBA8.
+    pub fn set_texture_compressed(&mut self, id: u32, fmt: u32, dims: &[u32], data: &[u8], srgb: bool) -> bool {
+        let levels = (dims.len() / 2) as u32;
+        let Some((format, need, bw, bytes_block)) = compressed_format(fmt, srgb) else { return false };
+        if levels == 0 || self.compressed & need == 0 && need != 0 {
+            return false;
+        }
+        let (w, h) = (dims[0], dims[1]);
+        // WebGPU exige que el nivel base sea multiplo del bloque
+        if w == 0 || h == 0 || w % bw != 0 || h % bw != 0 || levels > 32 - w.max(h).leading_zeros() {
+            return false;
+        }
+        // tamano de cada nivel en bytes, y comprobacion de que `data` los contiene todos
+        let size = |lw: u32, lh: u32| (lw.div_ceil(bw) as usize) * (lh.div_ceil(bw) as usize) * bytes_block as usize;
+        let total: usize = (0..levels as usize).map(|l| size(dims[l * 2], dims[l * 2 + 1])).sum();
+        if data.len() < total {
+            return false;
+        }
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let mut off = 0usize;
+        for l in 0..levels {
+            let (lw, lh) = (dims[l as usize * 2], dims[l as usize * 2 + 1]);
+            let n = size(lw, lh);
+            // el ultimo nivel puede ser menor que un bloque: se copia el bloque completo (tamano fisico)
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: l, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &data[off..off + n],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(lw.div_ceil(bw) * bytes_block), rows_per_image: Some(lh.div_ceil(bw)) },
+                wgpu::Extent3d { width: lw.div_ceil(bw) * bw, height: lh.div_ceil(bw) * bw, depth_or_array_layers: 1 },
+            );
+            off += n;
+        }
+        self.tex_bytes.insert(id, total as u64);
+        self.textures.insert(id, tex.create_view(&Default::default()));
+        self.bgs.clear();
+        true
+    }
+
+    /// Formatos comprimidos que admite el dispositivo: bit 0 BC (S3TC y BPTC), bit 1 ETC2, bit 2 ASTC.
+    pub fn compressed_support(&self) -> u32 {
+        self.compressed
+    }
+
+    /// VRAM aproximada de las texturas subidas con `set_texture` y `set_texture_compressed` (bytes, mipmaps incluidos).
+    pub fn texture_bytes(&self) -> f64 {
+        self.tex_bytes.values().sum::<u64>() as f64
     }
 
     /// Tablas LTC de RectAreaLight (64x64 RGBA float, las de `RectAreaLightUniformsLib`).
@@ -1009,6 +1101,7 @@ impl Gl {
 
     pub fn drop_texture(&mut self, id: u32) {
         self.textures.remove(&id);
+        self.tex_bytes.remove(&id);
         self.bgs.clear();
     }
 

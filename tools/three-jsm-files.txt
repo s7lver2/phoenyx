@@ -23,3 +23,7 @@ shaders/SMAAShader.js
 shaders/OutputShader.js
 objects/Reflector.js
 controls/OrbitControls.js
+
+# texturas comprimidas KTX2/Basis (el transcodificador wasm va en packages/phoenyx/basis, ver docs/KTX2.md)
+loaders/KTX2Loader.js
+libs/zstddec.module.js

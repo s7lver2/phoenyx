@@ -9,6 +9,9 @@ const warnOnce = (k: string, msg: string) => {
   if (!warned.has(k)) (warned.add(k), console.warn('[phoenyx] ' + msg));
 };
 
+/** Una textura tiene cadena de mipmaps si three debe generarla o si ya trae varios niveles (KTX2). */
+const hasMips = (tex: any) => tex.generateMipmaps !== false || (tex.isCompressedTexture && tex.mipmaps?.length > 1);
+
 export class TextureCache {
   private ids = new WeakMap<object, { id: number; version: number; source: any }>();
   private samplers = new Map<string, number>();
@@ -76,6 +79,26 @@ export class TextureCache {
     return { w: cw, h: ch, data: tex.flipY ? flipRows(rgba, cw, ch) : rgba };
   }
 
+  /** Niveles de una CompressedTexture (la de KTX2Loader) como (anchos y altos, datos seguidos); null si no tiene datos. */
+  private compressedLevels(tex: any): { dims: Uint32Array; data: Uint8Array } | null {
+    const mm = tex.mipmaps;
+    if (!mm || !mm.length || !mm[0].data) return null;
+    const dims = new Uint32Array(mm.length * 2);
+    let total = 0;
+    for (let i = 0; i < mm.length; i++) {
+      dims[i * 2] = mm[i].width;
+      dims[i * 2 + 1] = mm[i].height;
+      total += mm[i].data.byteLength;
+    }
+    const data = new Uint8Array(total);
+    let off = 0;
+    for (const m of mm) {
+      data.set(new Uint8Array(m.data.buffer, m.data.byteOffset, m.data.byteLength), off);
+      off += m.data.byteLength;
+    }
+    return { dims, data };
+  }
+
   /** Registra (o redimensiona) el render target en la GPU y devuelve el id de su textura de color. */
   target(rt: any): number {
     const fmt = rt.texture.type === HalfFloatType || rt.texture.type === FloatType ? 1 : 2;
@@ -112,8 +135,10 @@ export class TextureCache {
     // textura de render target o de profundidad que aun no se ha creado en la GPU
     if (!rec && (tex.isDepthTexture || tex.isRenderTargetTexture)) return 0;
     if (rec && rec.version === tex.version && rec.source === tex.image) return rec.id;
-    const px = this.pixels(tex);
-    if (!px) return rec ? rec.id : 0;
+    // KTX2/Basis: los mipmaps llegan ya transcodificados (comprimidos para la GPU o RGBA8 de reserva)
+    const comp = tex.isCompressedTexture ? this.compressedLevels(tex) : null;
+    const px = comp ? null : tex.isCompressedTexture ? null : this.pixels(tex);
+    if (!comp && !px) return rec ? rec.id : 0;
     if (!rec) {
       const r = { id: this.nextTex++, version: -1, source: null };
       rec = r;
@@ -126,7 +151,11 @@ export class TextureCache {
         this.count--;
       });
     }
-    this.gl.set_texture(rec.id, px.w, px.h, px.data, tex.colorSpace === SRGBColorSpace, tex.generateMipmaps !== false);
+    if (comp) {
+      if (!this.gl.set_texture_compressed(rec.id, tex.format, comp.dims, comp.data, tex.colorSpace === SRGBColorSpace)) {
+        warnOnce('ktx-fmt' + tex.format, `formato de textura comprimida ${tex.format} no admitido por esta GPU: la textura no se dibuja`);
+      }
+    } else this.gl.set_texture(rec.id, px.w, px.h, px.data, tex.colorSpace === SRGBColorSpace, tex.generateMipmaps !== false);
     rec.version = tex.version;
     rec.source = tex.image;
     return rec.id;
@@ -147,16 +176,16 @@ export class TextureCache {
     const memo = this.samplerMemo.get(tex);
     if (memo) {
       const f = memo.f;
-      if (f[0] === tex.wrapS && f[1] === tex.wrapT && f[2] === tex.magFilter && f[3] === tex.minFilter && f[4] === (tex.generateMipmaps !== false ? 1 : 0) && f[5] === (tex.anisotropy || 1)) return memo.id;
+      if (f[0] === tex.wrapS && f[1] === tex.wrapT && f[2] === tex.magFilter && f[3] === tex.minFilter && f[4] === (hasMips(tex) ? 1 : 0) && f[5] === (tex.anisotropy || 1)) return memo.id;
     }
     const id = this.samplerIdSlow(tex);
-    this.samplerMemo.set(tex, { f: [tex.wrapS, tex.wrapT, tex.magFilter, tex.minFilter, tex.generateMipmaps !== false ? 1 : 0, tex.anisotropy || 1], id });
+    this.samplerMemo.set(tex, { f: [tex.wrapS, tex.wrapT, tex.magFilter, tex.minFilter, hasMips(tex) ? 1 : 0, tex.anisotropy || 1], id });
     return id;
   }
 
   private samplerIdSlow(tex: any): number {
     const wrap = (w: number) => (w === RepeatWrapping ? 0 : w === ClampToEdgeWrapping ? 1 : w === MirroredRepeatWrapping ? 2 : 0);
-    const mips = tex.generateMipmaps !== false;
+    const mips = hasMips(tex);
     const min = tex.minFilter;
     const minLinear = min === LinearFilter || min === LinearMipmapNearestFilter || min === LinearMipmapLinearFilter;
     // sin mipmaps, los filtros con mipmap se comportan como Nearest o Linear sin ellas

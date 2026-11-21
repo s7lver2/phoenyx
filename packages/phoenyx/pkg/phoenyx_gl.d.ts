@@ -48,6 +48,10 @@ export class Gl {
      */
     clear(r: number, g: number, b: number, a: number, color: boolean, depth: boolean): void;
     /**
+     * Formatos comprimidos que admite el dispositivo: bit 0 BC (S3TC y BPTC), bit 1 ETC2, bit 2 ASTC.
+     */
+    compressed_support(): number;
+    /**
      * Crea (o reemplaza) un render target. `color_id` es su id de textura (para leerlo como `map` o entrada de un pase);
      * `depth_id` != 0 registra tambien su profundidad como textura legible. `fmt`: 1 RGBA16F, 2 RGBA8.
      */
@@ -126,6 +130,12 @@ export class Gl {
      */
     set_target(id: number): void;
     /**
+     * Sube una textura ya comprimida (BC, ETC2 o ASTC 4x4, `fmt` es la constante de formato de three) con todos sus mipmaps incluidos.
+     * `dims` lleva (ancho, alto) de cada nivel y `data` los niveles seguidos, del mayor al menor. Devuelve false si el dispositivo no
+     * admite el formato o los datos no cuadran: el llamador debe entonces transcodificar a RGBA8.
+     */
+    set_texture_compressed(id: number, fmt: number, dims: Uint32Array | number[], data: Uint8Array | number[], srgb: boolean): boolean;
+    /**
      * Sube una textura RGBA de 8 bits (filas ya en el orden de `flipY`) y calcula sus mipmaps si `mips`.
      */
     set_texture(id: number, w: number, h: number, rgba: Uint8Array | number[], srgb: boolean, mips: boolean): void;
@@ -139,6 +149,10 @@ export class Gl {
      */
     stats(): Float32Array;
     take_error(): string;
+    /**
+     * VRAM aproximada de las texturas subidas con `set_texture` y `set_texture_compressed` (bytes, mipmaps incluidos).
+     */
+    texture_bytes(): number;
     /**
      * `[tipo, ms, tipo, ms, ...]` de la ultima lectura: 1 sombras, 2 escena, 100 + id de pase de pantalla completa (sumados por tipo).
      */
@@ -170,6 +184,7 @@ export interface InitOutput {
     readonly collide_step_projectiles: (a: number, b: number, c: number, d: any, e: number, f: number, g: number) => void;
     readonly create: (a: any, b: number) => any;
     readonly gl_clear: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly gl_compressed_support: (a: number) => number;
     readonly gl_create_target: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly gl_destroy: (a: number) => void;
     readonly gl_drop_geometry: (a: number, b: number) => void;
@@ -194,17 +209,19 @@ export interface InitOutput {
     readonly gl_set_shadow_maps: (a: number, b: number, c: number) => void;
     readonly gl_set_target: (a: number, b: number) => void;
     readonly gl_set_texture: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly gl_set_texture_compressed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
     readonly gl_set_viewport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly gl_stats: (a: number) => [number, number];
     readonly gl_take_error: (a: number) => [number, number];
+    readonly gl_texture_bytes: (a: number) => number;
     readonly gl_timings: (a: number) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h14d3297b61464c3f: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_50: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_51: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_53: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h27b091ef5e220e15_54: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h45a38795a3ce41ab: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783_49: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h2bd702dad721f783_52: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
